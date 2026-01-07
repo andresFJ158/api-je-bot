@@ -754,11 +754,27 @@ export class WhatsAppService implements OnModuleInit {
           });
           this.logger.log(`[handleIncomingMessage] Created user with phone: ${phone || 'null'}, name: ${contactName}, JID: ${originalJidForSending}`);
         } else {
-          // Update user name, phone, and JID if needed
+          // Update user phone and JID if needed, but DON'T update name if it's already set
           const updateData: any = {};
           
-          if (contactName !== (phone || 'Contacto sin número') && contactName !== user.name) {
+          // Solo actualizar el nombre si el contacto no tiene un nombre establecido
+          // (es decir, si el nombre actual es el número de teléfono o un placeholder)
+          const defaultName = phone || 'Contacto sin número';
+          const hasDefaultName = !user.name || 
+                                 user.name === defaultName || 
+                                 user.name === phone ||
+                                 user.name.startsWith('Contacto sin');
+          
+          if (hasDefaultName && contactName !== defaultName && contactName !== phone) {
             updateData.name = contactName;
+            this.logger.log(`[handleIncomingMessage] ✅ Setting initial name for contact: ${contactName}`);
+          } else if (!user.name && contactName && contactName !== defaultName) {
+            // Si no tiene nombre y tenemos uno válido, establecerlo
+            updateData.name = contactName;
+            this.logger.log(`[handleIncomingMessage] ✅ Setting name for contact without name: ${contactName}`);
+          } else {
+            // El contacto ya tiene un nombre establecido, no actualizarlo
+            this.logger.debug(`[handleIncomingMessage] Contact already has name "${user.name}", not updating to "${contactName}"`);
           }
           
           // Actualizar phone si el usuario no tiene phone y ahora lo tenemos
@@ -1885,13 +1901,27 @@ export class WhatsAppService implements OnModuleInit {
             });
             this.logger.debug(`Created user for phone: ${phone}`);
           } else {
-            // Update user name if we have a better one from WhatsApp
+            // Solo actualizar el nombre si el contacto no tiene un nombre establecido
+            // (es decir, si el nombre actual es el número de teléfono o un placeholder)
             const contactName = chat.name || chat.subject;
-            if (contactName && contactName !== user.name && contactName !== phone) {
-              await this.prisma.user.update({
-                where: { id: user.id },
-                data: { name: contactName },
-              });
+            const defaultName = phone || 'Contacto sin número';
+            const hasDefaultName = !user.name || 
+                                   user.name === defaultName || 
+                                   user.name === phone ||
+                                   user.name.startsWith('Contacto sin');
+            
+            if (contactName && contactName !== phone && contactName !== defaultName) {
+              if (hasDefaultName) {
+                // Solo actualizar si tiene un nombre por defecto
+                await this.prisma.user.update({
+                  where: { id: user.id },
+                  data: { name: contactName },
+                });
+                this.logger.debug(`Updated user name from default "${user.name}" to "${contactName}"`);
+              } else {
+                // El contacto ya tiene un nombre establecido, no actualizarlo
+                this.logger.debug(`User already has name "${user.name}", not updating to "${contactName}"`);
+              }
             }
           }
 
