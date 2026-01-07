@@ -1,0 +1,306 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  phone       String?  @unique // Nullable para permitir contactos sin número (LIDs)
+  name        String
+  lastName    String?
+  email       String?
+  city        String?
+  whatsappJid String? // JID completo de WhatsApp (ej: "59171234567@s.whatsapp.net" o "123456789@lid")
+  tags        String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  conversations Conversation[]
+  orders        Order[]
+
+  @@index([phone])
+  @@index([city])
+  @@index([whatsappJid])
+  @@map("users")
+}
+
+model Agent {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      String   @default("agent") // "admin" | "agent"
+  online    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignedConversations Conversation[]
+  messages              Message[]
+  inventoryTransactions InventoryTransaction[]
+  orders                Order[]
+
+  @@map("agents")
+}
+
+model Conversation {
+  id              String   @id @default(uuid())
+  userId          String
+  assignedAgentId String?
+  tag             String?
+  mode            String   @default("BOT") // "BOT" | "HUMAN"
+  lastMessage     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedAgent Agent?    @relation(fields: [assignedAgentId], references: [id])
+  messages      Message[]
+
+  @@index([userId])
+  @@index([assignedAgentId])
+  @@index([mode])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String
+  sender         String // "user" | "bot" | "agent"
+  agentId        String? // ID of the agent who sent the message (if sender is "agent")
+  content        String   @db.Text
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([createdAt])
+  @@index([agentId])
+  @@map("messages")
+}
+
+model BotConfig {
+  id                               String   @id @default(uuid())
+  systemPrompt                     String   @default("Eres un Asistente Virtual (Chatbot) que actúa como punto de entrada del cliente. Tu función es: CLASIFICAR las consultas de los usuarios, COTIZAR productos y precios, y REGISTRAR información (pedidos, contactos, etc.). IMPORTANTE: NUNCA vendas ni confirmes pagos. Solo proporciona información, cotizaciones y registra datos. Las ventas y confirmaciones de pago deben ser manejadas por agentes humanos.")
+  temperature                      Float    @default(0.7)
+  maxTokens                        Int      @default(500)
+  model                            String   @default("deepseek-chat")
+  contextMessages                  Int      @default(5)
+  classificationCategories         String[] @default(["ventas", "soporte", "facturacion", "otros"])
+  orderInstructions                String?  @db.Text
+  locationInstructions             String?  @db.Text
+  locationKeywords                 String?  @db.Text
+  // Feature flags for bot rules
+  autoCreateOrderOnPaymentRequest  Boolean  @default(true)
+  autoSendQRImages                 Boolean  @default(true)
+  notifyOrderStatusChanges         Boolean  @default(true)
+  findNearestBranchOnLocationShare Boolean  @default(true)
+  showLocationInstructions         Boolean  @default(true)
+  prepareOrderInsteadOfCreate      Boolean  @default(true)
+  extractOrderFromContext          Boolean  @default(true)
+  updatedAt                        DateTime @updatedAt
+  updatedBy                        String?
+
+  @@map("bot_config")
+}
+
+model Category {
+  id          String   @id @default(uuid())
+  name        String
+  description String?  @db.Text
+  parentId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Category[] @relation("CategoryHierarchy")
+  products Product[]
+  combos   Combo[]
+
+  @@unique([name, parentId])
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  name        String
+  price       Float
+  description String   @db.Text
+  stock       Int      @default(0) // Calculado automáticamente por transacciones de inventario
+  categoryId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category     Category?              @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  transactions InventoryTransaction[]
+  orderItems   OrderItem[]
+  comboItems   ComboItem[] // Productos que forman parte de combos
+
+  @@index([categoryId])
+  @@map("products")
+}
+
+model Combo {
+  id          String   @id @default(uuid())
+  name        String
+  description String   @db.Text
+  offerPrice  Float // Precio de oferta del combo (editable)
+  categoryId  String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category   Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  items      ComboItem[] // Productos que forman parte del combo
+  orderItems OrderItem[] // Puede ser vendido como un producto en pedidos
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("combos")
+}
+
+model ComboItem {
+  id        String   @id @default(uuid())
+  comboId   String
+  productId String
+  quantity  Int      @default(1) // Cantidad del producto en el combo
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  combo   Combo   @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([comboId, productId]) // Un producto solo puede aparecer una vez por combo
+  @@index([comboId])
+  @@index([productId])
+  @@map("combo_items")
+}
+
+model Branch {
+  id           String   @id @default(uuid())
+  name         String
+  address      String
+  latitude     Float
+  longitude    Float
+  phone        String?
+  openingHours String?  @db.Text
+  description  String?  @db.Text
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders Order[]
+
+  @@index([latitude, longitude])
+  @@map("branches")
+}
+
+model InventoryTransaction {
+  id        String   @id @default(uuid())
+  productId String
+  type      String // "ENTRADA" | "SALIDA"
+  quantity  Int
+  glosa     String?  @db.Text // Descripción/razón de la transacción
+  agentId   String? // Agente que realizó la transacción
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  agent   Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([agentId])
+  @@map("inventory_transactions")
+}
+
+model QuickReply {
+  id        String   @id @default(uuid())
+  title     String // Título corto para identificar la respuesta
+  message   String   @db.Text // Contenido del mensaje
+  category  String? // Categoría opcional para organizar (ej: "saludos", "despedidas", "productos")
+  order     Int      @default(0) // Orden de visualización
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([order])
+  @@map("quick_replies")
+}
+
+model Order {
+  id        String   @id @default(uuid())
+  branchId  String // Sucursal donde se creó el pedido
+  userId    String? // Cliente (contacto) - opcional para ventas sin cliente registrado
+  agentId   String? // Agente que creó el pedido
+  status    String   @default("PENDIENTE_DE_PAGO") // "PENDIENTE_DE_PAGO" | "PAGO_RECIBIDO" | "COMPLETADO" | "CANCELADO"
+  subtotal  Float    @default(0)
+  discount  Float    @default(0) // Descuento aplicado
+  tax       Float    @default(0) // Impuestos
+  total     Float    @default(0)
+  notes     String?  @db.Text // Notas adicionales del pedido
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  agent  Agent?      @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  items  OrderItem[]
+
+  @@index([branchId])
+  @@index([userId])
+  @@index([agentId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String   @id @default(uuid())
+  orderId   String
+  productId String? // Nullable para permitir combos
+  comboId   String? // Nullable para permitir productos normales
+  quantity  Int
+  unitPrice Float // Precio unitario al momento de la venta (puede diferir del precio actual del producto/combo)
+  discount  Float    @default(0) // Descuento aplicado a este item
+  subtotal  Float // (quantity * unitPrice) - discount
+  createdAt DateTime @default(now())
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
+  combo   Combo?   @relation(fields: [comboId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([comboId])
+  @@map("order_items")
+}
+
+model PaymentMethod {
+  id            String   @id @default(uuid())
+  type          String // "QR" | "BANK_ACCOUNT"
+  name          String // Nombre descriptivo (ej: "QR Principal", "Cuenta BCP")
+  description   String?  @db.Text // Descripción opcional
+  qrImageUrl    String? // URL de la imagen del QR (para tipo QR)
+  bankName      String? // Nombre del banco (para tipo BANK_ACCOUNT)
+  accountNumber String? // Número de cuenta (para tipo BANK_ACCOUNT)
+  accountType   String? // Tipo de cuenta: "AHORROS" | "CORRIENTE" (para tipo BANK_ACCOUNT)
+  cci           String? // Código de Cuenta Interbancario (para tipo BANK_ACCOUNT)
+  isActive      Boolean  @default(true)
+  order         Int      @default(0) // Orden de visualización
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+  @@index([order])
+  @@map("payment_methods")
+}

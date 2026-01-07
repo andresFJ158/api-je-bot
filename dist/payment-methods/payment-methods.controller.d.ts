@@ -1,0 +1,104 @@
+import { PaymentMethodsService } from './payment-methods.service';
+import { CreatePaymentMethodDto } from './dto/create-payment-method.dto';
+import { UpdatePaymentMethodDto } from './dto/update-payment-method.dto';
+export declare class PaymentMethodsController {
+    private readonly paymentMethodsService;
+    private readonly logger;
+    constructor(paymentMethodsService: PaymentMethodsService);
+    create(createPaymentMethodDto: CreatePaymentMethodDto): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    findAll(activeOnly?: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }[]>;
+    findByType(type: 'QR' | 'BANK_ACCOUNT', activeOnly?: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }[]>;
+    findOne(id: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    update(id: string, updatePaymentMethodDto: UpdatePaymentMethodDto): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    remove(id: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    uploadQR(file: Express.Multer.File): Promise<{
+        url: string;
+        filename: string;
+        originalName: string;
+        size: number;
+    }>;
+}

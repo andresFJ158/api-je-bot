@@ -1,0 +1,98 @@
+import { PrismaService } from '../prisma/prisma.service';
+import { CreatePaymentMethodDto } from './dto/create-payment-method.dto';
+import { UpdatePaymentMethodDto } from './dto/update-payment-method.dto';
+export declare class PaymentMethodsService {
+    private prisma;
+    private readonly logger;
+    constructor(prisma: PrismaService);
+    create(createDto: CreatePaymentMethodDto): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    findAll(activeOnly?: boolean): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }[]>;
+    findOne(id: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    update(id: string, updateDto: UpdatePaymentMethodDto): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    remove(id: string): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }>;
+    findByType(type: 'QR' | 'BANK_ACCOUNT', activeOnly?: boolean): Promise<{
+        order: number;
+        id: string;
+        name: string;
+        createdAt: Date;
+        updatedAt: Date;
+        description: string | null;
+        isActive: boolean;
+        type: string;
+        qrImageUrl: string | null;
+        bankName: string | null;
+        accountNumber: string | null;
+        accountType: string | null;
+        cci: string | null;
+    }[]>;
+}
