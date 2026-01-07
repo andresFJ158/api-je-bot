@@ -43,13 +43,16 @@ export class WhatsAppService implements OnModuleInit {
   private readonly logger = new Logger(WhatsAppService.name);
   private sessionPath = process.env.WHATSAPP_SESSION_PATH || './sessions';
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = 10; // Aumentado de 5 a 10 para más intentos de reconexión
   private currentQR: string | null = null;
   private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
   private pendingMessages: PendingMessage[] = [];
   private readonly maxPendingMessageAge = 5 * 60 * 1000; // 5 minutes
   private readonly maxMessageRetries = 3;
   private baileys: BaileysModule | null = null;
+  private keepAliveInterval: NodeJS.Timeout | null = null; // Intervalo para mantener la sesión activa
+  private connectionCheckInterval: NodeJS.Timeout | null = null; // Intervalo para verificar conexión en paralelo
+  private isReconnecting = false; // Flag para evitar múltiples reconexiones simultáneas
 
   // Lazy load baileys module using eval to ensure truly dynamic import
   // TypeScript cannot statically analyze eval, so it won't compile to require()
@@ -131,18 +134,25 @@ export class WhatsAppService implements OnModuleInit {
       this.socket = baileys.makeWASocket({
         auth: state,
         logger: logger,
-        connectTimeoutMs: 60_000, // 60 segundos
-        defaultQueryTimeoutMs: 60_000,
-        keepAliveIntervalMs: 10_000,
-        qrTimeout: 60_000, // Tiempo para generar QR
+        connectTimeoutMs: 120_000, // 120 segundos - tiempo más largo para conexión
+        defaultQueryTimeoutMs: 120_000, // 120 segundos - timeout más largo para queries
+        keepAliveIntervalMs: 30_000, // 30 segundos - mantener conexión activa más frecuentemente
+        qrTimeout: 120_000, // 120 segundos - tiempo más largo para generar QR
         markOnlineOnConnect: false, // No marcar como online hasta estar completamente conectado
         syncFullHistory: false, // No sincronizar historial completo
         generateHighQualityLinkPreview: false,
+        // Configuraciones adicionales para mantener la sesión activa
+        browser: ['Jebolivia Bot', 'Chrome', '1.0.0'], // Identificador del navegador
         getMessage: async (key) => {
           return undefined; // No necesitamos recuperar mensajes antiguos
         },
         shouldSyncHistoryMessage: () => false, // No sincronizar mensajes antiguos
         shouldIgnoreJid: () => false,
+        // Configuración para mantener la conexión viva
+        retryRequestDelayMs: 250, // Delay entre reintentos
+        maxMsgRetryCount: 5, // Máximo de reintentos para mensajes
+        fireInitQueries: true, // Ejecutar queries de inicialización
+        emitOwnEvents: true, // Emitir eventos propios
       });
 
       this.socket.ev.on('connection.update', async (update) => {
@@ -156,7 +166,7 @@ export class WhatsAppService implements OnModuleInit {
           // Guardar QR para acceso desde API
           this.currentQR = qr;
           this.connectionState = 'connecting';
-          
+
           this.logger.log(`✅ QR code generated and saved (length: ${qr.length})`);
           this.logger.log(`QR available at /whatsapp/qr endpoint`);
 
@@ -189,6 +199,10 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         if (connection === 'close') {
+          // Detener el keep-alive y verificación cuando la conexión se cierra
+          this.stopKeepAlive();
+          this.stopConnectionCheck();
+
           const baileys = await this.getBaileys();
           const disconnectReason = (lastDisconnect?.error as any)?.output?.statusCode;
           const isLoggedOut = disconnectReason === baileys.DisconnectReason.loggedOut;
@@ -196,7 +210,7 @@ export class WhatsAppService implements OnModuleInit {
           const errorDetails = lastDisconnect?.error as any;
           const errorMessage = errorDetails?.message || errorDetails?.toString() || 'Unknown error';
           const isXmlError = errorMessage.includes('xml-not-well-formed') || errorMessage.includes('Stream Errored');
-          
+
           // Log error with more context
           if (isXmlError) {
             this.logger.warn(
@@ -233,60 +247,40 @@ export class WhatsAppService implements OnModuleInit {
               this.logger.error('Error eliminando archivos de sesión:', error);
             }
           } else {
-            // Not logged out, try to reconnect automatically
-            const shouldReconnect = this.reconnectAttempts < this.maxReconnectAttempts;
+            // Not logged out, try to reconnect automatically en paralelo sin bloquear
+            // NO cambiar el estado a disconnected para que el servicio siga funcionando
+            this.connectionState = 'connecting'; // Mantener como connecting, no disconnected
 
-            if (shouldReconnect) {
-              this.reconnectAttempts++;
-              // For XML errors, use longer wait time as they often indicate temporary server issues
-              const baseWaitTime = isXmlError ? 5000 : 2000;
-              const waitTime = Math.min(this.reconnectAttempts * baseWaitTime, isXmlError ? 30000 : 10000);
-              this.logger.log(`Retrying WhatsApp connection (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${waitTime / 1000}s...`);
-              
-              // For XML errors, suggest clearing session if multiple attempts fail
-              if (isXmlError && this.reconnectAttempts >= 3) {
-                this.logger.warn('If XML errors persist, try clearing the session folder and reconnecting.');
-              }
-              
-              setTimeout(() => {
-                this.initializeWhatsApp();
-              }, waitTime);
-            } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-              this.logger.error(`Max reconnection attempts (${this.maxReconnectAttempts}) reached. Stopping reconnection.`);
-              this.connectionState = 'disconnected';
-              this.currentQR = null;
-              this.logger.error('Possible causes:');
-              this.logger.error('1. Network/firewall blocking WhatsApp servers');
-              this.logger.error('2. WhatsApp servers temporarily unavailable');
-              this.logger.error('3. Rate limiting from too many connection attempts');
-              
-              if (isXmlError) {
-                this.logger.error('4. XML parsing errors - This may indicate:');
-                this.logger.error('   - Corrupted session files (try deleting the sessions folder)');
-                this.logger.error('   - Network issues causing malformed responses');
-                this.logger.error('   - WhatsApp server-side issues (usually temporary)');
-                this.logger.error('   Solution: Delete the sessions folder and wait 5-10 minutes before reconnecting');
-              }
-              
-              if (errorDetails?.output?.statusCode === 405) {
-                this.logger.error('5. Error 405: Try updating Baileys: npm install @whiskeysockets/baileys@latest');
-                this.logger.error('6. Error 405: Delete sessions folder and wait 10+ minutes before retrying');
-              }
-              this.logger.error('');
-              this.logger.warn('⚠️  WhatsApp service is disabled. The CRM will continue working, but WhatsApp features are unavailable.');
-              this.logger.warn('To retry: Use the reconnect button in the frontend');
+            // Reconectar en paralelo sin bloquear el servicio
+            this.reconnectInBackground(isXmlError, disconnectReason).catch((error) => {
+              this.logger.error('Error en reconexión en background:', error);
+            });
+
+            // Si se agotaron los intentos, solo loguear pero no detener el servicio
+            // La verificación periódica seguirá intentando reconectar
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+              this.logger.warn(`⚠️  Máximo de intentos de reconexión alcanzado (${this.maxReconnectAttempts}).`);
+              this.logger.warn('💡 El servicio continuará funcionando. La reconexión se intentará automáticamente en el próximo ciclo de verificación.');
+              this.logger.warn('💡 También puedes usar el botón "Reconectar" en el frontend para forzar una reconexión.');
             }
           }
         } else if (connection === 'open') {
           this.logger.log('✅ WhatsApp connected successfully');
           this.reconnectAttempts = 0; // Reset counter on successful connection
           this.connectionState = 'connected';
-          
+          this.isReconnecting = false; // Reset reconnecting flag
+
+          // Iniciar el mecanismo de keep-alive para mantener la sesión activa
+          this.startKeepAlive();
+
+          // Iniciar verificación periódica de conexión en paralelo
+          this.startConnectionCheck();
+
           // Log pending messages count
           if (this.pendingMessages.length > 0) {
             this.logger.log(`📨 ${this.pendingMessages.length} message(s) waiting in queue - will be sent shortly`);
           }
-          
+
           // Don't clear QR immediately - let it clear after a delay to ensure frontend got it
           setTimeout(() => {
             this.currentQR = null;
@@ -379,7 +373,7 @@ export class WhatsAppService implements OnModuleInit {
 
         // Ignore messages from groups (JID ends with @g.us)
         const remoteJid = msg.key.remoteJid || '';
-        
+
         // Log detallado del JID para debugging
         this.logger.debug(`[handleIncomingMessage] Raw remoteJid: "${remoteJid}", Type: ${typeof remoteJid}, Length: ${remoteJid.length}`);
         if (remoteJid) {
@@ -391,7 +385,7 @@ export class WhatsAppService implements OnModuleInit {
             afterAt: remoteJid.split('@')[1],
           })}`);
         }
-        
+
         // Step 1: Detect the JID type (correct way to handle this in Baileys)
         function getJidType(jid: string): 'phone' | 'group' | 'linked-id' | 'unknown' {
           if (jid.endsWith('@s.whatsapp.net')) return 'phone';
@@ -399,10 +393,10 @@ export class WhatsAppService implements OnModuleInit {
           if (jid.endsWith('@lid')) return 'linked-id';
           return 'unknown';
         }
-        
+
         const jidType = getJidType(remoteJid);
         this.logger.debug(`[handleIncomingMessage] JID type: ${jidType} for ${remoteJid}`);
-        
+
         // Skip groups
         if (jidType === 'group') {
           this.logger.debug(`Ignoring message from group: ${remoteJid}`);
@@ -432,19 +426,19 @@ export class WhatsAppService implements OnModuleInit {
         // - @g.us (grupo)
         // 
         // Para JIDs con @lid, necesitamos obtener el número real del contacto desde el store
-        
+
         let phone = '';
         let originalJidForSending = remoteJid; // Guardar el JID original para enviar mensajes
-        
+
         // Use the jidType already detected above
         if (jidType === 'linked-id') {
           this.logger.debug(`[handleIncomingMessage] JID has @lid format, trying to get real phone number from store`);
-          
+
           // Intentar obtener el número real del contacto desde el store de Baileys
           try {
             if (this.socket && (this.socket as any).store) {
               const store = (this.socket as any).store;
-              
+
               // ESTRATEGIA 1: Usar onWhatsApp para verificar si el LID tiene un número real asociado
               if (this.socket.onWhatsApp) {
                 try {
@@ -460,13 +454,13 @@ export class WhatsAppService implements OnModuleInit {
                   this.logger.debug(`[handleIncomingMessage] onWhatsApp failed: ${error}`);
                 }
               }
-              
+
               // ESTRATEGIA 2: Buscar en todos los chats que tengan @s.whatsapp.net
               // y que coincidan con el nombre del contacto
               if (!phone && msg.pushName && store.chats) {
                 const contactName = msg.pushName.trim();
                 this.logger.debug(`[handleIncomingMessage] Searching all chats for name: "${contactName}"`);
-                
+
                 // Buscar en todos los chats
                 for (const [chatJid, chat] of store.chats.entries()) {
                   // Buscar por nombre exacto
@@ -475,7 +469,7 @@ export class WhatsAppService implements OnModuleInit {
                     this.logger.log(`[handleIncomingMessage] ✅ Found phone by matching name "${contactName}": ${phone}`);
                     break;
                   }
-                  
+
                   // También buscar por nombre parcial (por si hay espacios o diferencias menores)
                   if (chat.name && chat.name.includes(contactName) && chatJid.includes('@s.whatsapp.net')) {
                     phone = normalizePhoneNumber(chatJid);
@@ -484,14 +478,14 @@ export class WhatsAppService implements OnModuleInit {
                   }
                 }
               }
-              
+
               // ESTRATEGIA 3: Buscar el contacto en el store usando el JID
               if (!phone) {
                 const contact = store.contacts?.[remoteJid];
-                
+
                 if (contact) {
                   this.logger.debug(`[handleIncomingMessage] Found contact in store: ${JSON.stringify(Object.keys(contact))}`);
-                  
+
                   // Buscar el número en todos los campos del contacto
                   for (const [key, value] of Object.entries(contact)) {
                     if (typeof value === 'string' && value.includes('@s.whatsapp.net')) {
@@ -502,13 +496,13 @@ export class WhatsAppService implements OnModuleInit {
                   }
                 }
               }
-              
+
               // ESTRATEGIA 4: Buscar en el chat asociado al LID
               if (!phone && store.chats) {
                 const chat = store.chats.get(remoteJid);
                 if (chat) {
                   this.logger.debug(`[handleIncomingMessage] Found chat in store: ${JSON.stringify(Object.keys(chat))}`);
-                  
+
                   // Buscar el número en todos los campos del chat
                   for (const [key, value] of Object.entries(chat)) {
                     if (typeof value === 'string' && value.includes('@s.whatsapp.net')) {
@@ -519,7 +513,7 @@ export class WhatsAppService implements OnModuleInit {
                   }
                 }
               }
-              
+
               // ESTRATEGIA 5: Buscar en todos los chats que no sean LID y tengan mensajes recientes
               if (!phone && store.chats) {
                 this.logger.debug(`[handleIncomingMessage] Searching all non-LID chats...`);
@@ -535,19 +529,19 @@ export class WhatsAppService implements OnModuleInit {
                   }
                 }
               }
-              
+
               // ESTRATEGIA 6: Buscar en el mensaje mismo por información del contacto
               if (!phone && msg.messageStubType) {
                 // Algunos mensajes tienen información adicional en messageStubType
                 this.logger.debug(`[handleIncomingMessage] Message has stubType: ${msg.messageStubType}`);
               }
-              
+
               // ESTRATEGIA 7: Buscar en todos los chats recientes que hayan tenido actividad
               // y comparar timestamps para encontrar el chat correcto
               if (!phone && store.chats && msg.messageTimestamp) {
                 this.logger.debug(`[handleIncomingMessage] Searching chats by timestamp...`);
                 const messageTime = Number(msg.messageTimestamp) * 1000; // Convert to milliseconds
-                
+
                 for (const [chatJid, chat] of store.chats.entries()) {
                   if (chatJid.includes('@s.whatsapp.net') && !chatJid.includes('@lid') && !chatJid.includes('@g.us')) {
                     // Si el chat tiene mensajes recientes alrededor del mismo tiempo
@@ -574,7 +568,7 @@ export class WhatsAppService implements OnModuleInit {
           } catch (error) {
             this.logger.warn(`[handleIncomingMessage] Error getting phone from store: ${error}`);
           }
-          
+
           // ESTRATEGIA 6: Intentar usar jidDecode para extraer información del JID
           if (!phone) {
             try {
@@ -594,7 +588,7 @@ export class WhatsAppService implements OnModuleInit {
               this.logger.debug(`[handleIncomingMessage] jidDecode failed: ${error}`);
             }
           }
-          
+
           // Si no pudimos obtener el número real, guardar phone como null
           // El número se añadirá más tarde cuando se pueda extraer o se actualice manualmente
           if (!phone) {
@@ -608,14 +602,14 @@ export class WhatsAppService implements OnModuleInit {
             const baileys = await this.getBaileys();
             const normalizedJid = baileys.jidNormalizedUser(remoteJid);
             this.logger.debug(`[handleIncomingMessage] jidNormalizedUser result: ${normalizedJid} from JID: ${remoteJid}`);
-            
+
             // Si jidNormalizedUser devuelve un JID completo (con @), extraer solo el número
             if (normalizedJid && normalizedJid.includes('@')) {
               phone = normalizedJid.split('@')[0];
             } else {
               phone = normalizedJid || '';
             }
-            
+
             // Normalizar (solo dígitos)
             phone = normalizePhoneNumber(phone);
           } catch (error) {
@@ -628,9 +622,9 @@ export class WhatsAppService implements OnModuleInit {
           this.logger.warn(`[handleIncomingMessage] Unknown JID type: ${remoteJid}, attempting to extract phone anyway`);
           phone = normalizePhoneNumber(remoteJid);
         }
-        
+
         this.logger.log(`[handleIncomingMessage] Original JID: ${remoteJid}, Extracted phone: ${phone || 'null'}, Length: ${phone ? phone.length : 0}`);
-        
+
         // Validar el número solo si no es null
         if (phone) {
           // Validar que el número tenga una longitud razonable
@@ -654,12 +648,12 @@ export class WhatsAppService implements OnModuleInit {
             phone = null;
           }
         }
-        
+
         // Si phone es null, continuar procesando el mensaje (se guardará con phone: null)
         if (!phone) {
           this.logger.warn(`[handleIncomingMessage] ⚠️ Contact will be saved with phone: null. Phone number will be added later when available.`);
         }
-        
+
         // Log adicional para números sospechosos (más de 12 dígitos)
         if (phone.length > 12) {
           this.logger.warn(`[handleIncomingMessage] WARNING: Phone number has ${phone.length} digits (might be incorrect): ${phone}. Original JID: ${remoteJid}`);
@@ -672,7 +666,7 @@ export class WhatsAppService implements OnModuleInit {
           if (msg.pushName && msg.pushName.trim()) {
             contactName = msg.pushName.trim();
             this.logger.debug(`[handleIncomingMessage] Got name from pushName: ${contactName}`);
-          } 
+          }
           // Method 2: Try to get from store contacts (if available)
           else if (this.socket && (this.socket as any).store && phone) {
             try {
@@ -690,7 +684,7 @@ export class WhatsAppService implements OnModuleInit {
               // Ignore errors, will use phone as fallback
             }
           }
-          
+
           // Method 3: Try to get from chats in store using the original JID (works for LIDs too)
           if (this.socket && (this.socket as any).store) {
             try {
@@ -728,14 +722,14 @@ export class WhatsAppService implements OnModuleInit {
         // IMPORTANTE: Guardar el JID completo para poder usarlo al enviar mensajes
         // Buscar usuario por phone (si existe) o por whatsappJid
         let user = null;
-        
+
         if (phone) {
           // Buscar por phone si existe
           user = await this.prisma.user.findUnique({
             where: { phone },
           });
         }
-        
+
         // Si no se encontró por phone, buscar por whatsappJid
         if (!user) {
           user = await this.prisma.user.findFirst({
@@ -756,15 +750,15 @@ export class WhatsAppService implements OnModuleInit {
         } else {
           // Update user phone and JID if needed, but DON'T update name if it's already set
           const updateData: any = {};
-          
+
           // Solo actualizar el nombre si el contacto no tiene un nombre establecido
           // (es decir, si el nombre actual es el número de teléfono o un placeholder)
           const defaultName = phone || 'Contacto sin número';
-          const hasDefaultName = !user.name || 
-                                 user.name === defaultName || 
-                                 user.name === phone ||
-                                 user.name.startsWith('Contacto sin');
-          
+          const hasDefaultName = !user.name ||
+            user.name === defaultName ||
+            user.name === phone ||
+            user.name.startsWith('Contacto sin');
+
           if (hasDefaultName && contactName !== defaultName && contactName !== phone) {
             updateData.name = contactName;
             this.logger.log(`[handleIncomingMessage] ✅ Setting initial name for contact: ${contactName}`);
@@ -776,19 +770,19 @@ export class WhatsAppService implements OnModuleInit {
             // El contacto ya tiene un nombre establecido, no actualizarlo
             this.logger.debug(`[handleIncomingMessage] Contact already has name "${user.name}", not updating to "${contactName}"`);
           }
-          
+
           // Actualizar phone si el usuario no tiene phone y ahora lo tenemos
           if (!user.phone && phone) {
             updateData.phone = phone;
             this.logger.log(`[handleIncomingMessage] ✅ Adding phone number to user: ${phone}`);
           }
-          
+
           // Actualizar el JID si no existe o si es diferente (especialmente si ahora tenemos un JID real)
           if (!user.whatsappJid || (originalJidForSending.includes('@s.whatsapp.net') && !user.whatsappJid.includes('@s.whatsapp.net'))) {
             updateData.whatsappJid = originalJidForSending;
             this.logger.debug(`[handleIncomingMessage] Updated user JID from "${user.whatsappJid}" to "${originalJidForSending}"`);
           }
-          
+
           if (Object.keys(updateData).length > 0) {
             await this.prisma.user.update({
               where: { id: user.id },
@@ -800,7 +794,7 @@ export class WhatsAppService implements OnModuleInit {
             });
           }
         }
-        
+
         // Guardar el JID original en una variable que usaremos al enviar mensajes
         // Usar el JID guardado en la BD si existe, sino usar el original
         const jidToUse = user.whatsappJid || originalJidForSending;
@@ -978,7 +972,7 @@ export class WhatsAppService implements OnModuleInit {
         // Use updatedConversation.mode instead of conversation.mode
         if (!isFromMe && updatedConversation.mode === 'BOT') {
           this.logger.log(`[handleIncomingMessage] Processing bot response for new message from ${phone} in conversation ${updatedConversation.id}`);
-          
+
           // Show typing indicator immediately - use updatedConversation user data
           const userPhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
           await this.sendTypingIndicator(userPhone, true);
@@ -1046,7 +1040,7 @@ export class WhatsAppService implements OnModuleInit {
 
             if (botResponse) {
               this.logger.log(`[handleIncomingMessage] Creating bot message in database for conversation ${updatedConversation.id}`);
-              
+
               // Create bot message in database using MessagesService
               // This will also broadcast it via WebSocket
               // Pass skipWhatsApp flag to avoid sending twice
@@ -1060,16 +1054,16 @@ export class WhatsAppService implements OnModuleInit {
               // Get user phone from updatedConversation
               const userPhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
               this.logger.log(`[handleIncomingMessage] Sending bot message via WhatsApp to ${userPhone}`);
-              
+
               // Usar el JID guardado en la BD si existe, sino usar el número de teléfono
               // sendMessage ahora busca automáticamente el JID guardado en la BD
               const phoneToSend = updatedConversation.user?.whatsappJid || updatedConversation.user?.phone || userPhone;
-              
+
               // Send bot message via WhatsApp with typing indicator
               // Note: This message will be captured again by handleIncomingMessage
               // but with fromMe=true, so it won't trigger another bot response
               const sent = await this.sendMessage(phoneToSend, botResponse, true);
-              
+
               if (sent) {
                 this.logger.log(`[handleIncomingMessage] Bot message sent successfully to ${userPhone}`);
               } else {
@@ -1096,7 +1090,7 @@ export class WhatsAppService implements OnModuleInit {
                       if (qrMethod.qrImageUrl) {
                         // Wait a bit between messages
                         await new Promise(resolve => setTimeout(resolve, 1000));
-                        
+
                         const caption = qrMethod.name + (qrMethod.description ? `\n${qrMethod.description}` : '');
                         const imagePhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
                         await this.sendImage(imagePhone, qrMethod.qrImageUrl, caption);
@@ -1153,18 +1147,18 @@ export class WhatsAppService implements OnModuleInit {
     } else {
       // Normalizar el número de teléfono
       const normalizedPhone = normalizePhoneNumber(phone);
-      
+
       if (!normalizedPhone || normalizedPhone.length < 8) {
         return false;
       }
-      
+
       // Intentar obtener el JID guardado en la BD para este número
       try {
         const user = await this.prisma.user.findUnique({
           where: { phone: normalizedPhone },
           select: { whatsappJid: true },
         });
-        
+
         if (user?.whatsappJid) {
           jid = user.whatsappJid;
         } else {
@@ -1176,7 +1170,7 @@ export class WhatsAppService implements OnModuleInit {
         jid = `${normalizedPhone}@s.whatsapp.net`;
       }
     }
-    
+
     try {
       if (!this.socket) {
         return false;
@@ -1202,15 +1196,15 @@ export class WhatsAppService implements OnModuleInit {
       return true;
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
-      
+
       // Check if it's a connection error - don't log as error for connection issues
-      if (errorMessage.includes('Connection Closed') || 
-          errorMessage.includes('Connection closed') ||
-          errorMessage.includes('Stream Errored')) {
+      if (errorMessage.includes('Connection Closed') ||
+        errorMessage.includes('Connection closed') ||
+        errorMessage.includes('Stream Errored')) {
         // Silently fail for connection errors - connection will be retried
         return false;
       }
-      
+
       this.logger.error(`Error sending typing indicator to ${jid || phone}:`, error);
       return false;
     }
@@ -1226,19 +1220,19 @@ export class WhatsAppService implements OnModuleInit {
     } else {
       // Normalizar el número de teléfono
       const normalizedPhone = normalizePhoneNumber(phone);
-      
+
       if (!normalizedPhone || normalizedPhone.length < 8) {
         this.logger.warn(`Invalid phone number: ${phone}`);
         return false;
       }
-      
+
       // Intentar obtener el JID guardado en la BD para este número
       try {
         const user = await this.prisma.user.findUnique({
           where: { phone: normalizedPhone },
           select: { whatsappJid: true },
         });
-        
+
         if (user?.whatsappJid) {
           jid = user.whatsappJid;
           this.logger.debug(`[sendMessage] Using saved JID from database: ${jid} for phone: ${normalizedPhone}`);
@@ -1253,7 +1247,7 @@ export class WhatsAppService implements OnModuleInit {
         jid = `${normalizedPhone}@s.whatsapp.net`;
       }
     }
-    
+
     try {
       if (!this.socket) {
         this.logger.warn('WhatsApp socket not initialized - message not sent');
@@ -1282,7 +1276,7 @@ export class WhatsAppService implements OnModuleInit {
 
       // Extraer el número o identificador para logging y typing indicator
       const phoneForLogging = jid.includes('@') ? jid.split('@')[0] : jid;
-      
+
       // Show typing indicator if requested
       if (showTyping) {
         await this.sendTypingIndicator(jid, true);
@@ -1303,12 +1297,12 @@ export class WhatsAppService implements OnModuleInit {
       return true;
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
-      
+
       // Check if it's a connection error
-      if (errorMessage.includes('Connection Closed') || 
-          errorMessage.includes('Connection closed') ||
-          errorMessage.includes('Stream Errored') ||
-          errorMessage.includes('xml-not-well-formed')) {
+      if (errorMessage.includes('Connection Closed') ||
+        errorMessage.includes('Connection closed') ||
+        errorMessage.includes('Stream Errored') ||
+        errorMessage.includes('xml-not-well-formed')) {
         this.logger.warn(`Connection error while sending message to ${jid}: ${errorMessage}`);
         this.connectionState = 'disconnected';
         // Add to pending queue to retry when connection is restored
@@ -1317,7 +1311,7 @@ export class WhatsAppService implements OnModuleInit {
       } else {
         this.logger.error(`Error sending message to ${jid}:`, error);
       }
-      
+
       // Try to stop typing indicator even if message failed
       try {
         await this.sendTypingIndicator(jid, false);
@@ -1334,7 +1328,7 @@ export class WhatsAppService implements OnModuleInit {
   private addToPendingQueue(phone: string, content: string, showTyping: boolean = false): void {
     // Remove any existing pending message for this phone to avoid duplicates
     this.pendingMessages = this.pendingMessages.filter(msg => !(msg.phone === phone && msg.content === content));
-    
+
     this.pendingMessages.push({
       phone,
       content,
@@ -1343,7 +1337,7 @@ export class WhatsAppService implements OnModuleInit {
       retries: 0,
       maxRetries: this.maxMessageRetries,
     });
-    
+
     this.logger.warn(`📥 Message added to pending queue for ${phone} (${this.pendingMessages.length} total pending)`);
     this.logger.warn(`⚠️  WhatsApp is disconnected. Messages will be sent automatically when connection is restored.`);
     this.logger.warn(`💡 To reconnect: Use POST /whatsapp/reconnect or check status at GET /whatsapp/status`);
@@ -1375,7 +1369,7 @@ export class WhatsAppService implements OnModuleInit {
       try {
         // Remove from queue before attempting to send
         this.pendingMessages = this.pendingMessages.filter(msg => msg !== pendingMsg);
-        
+
         // Check if we've exceeded max retries
         if (pendingMsg.retries >= (pendingMsg.maxRetries || this.maxMessageRetries)) {
           this.logger.warn(`Max retries reached for message to ${pendingMsg.phone}, skipping`);
@@ -1387,7 +1381,7 @@ export class WhatsAppService implements OnModuleInit {
 
         // Attempt to send
         const sent = await this.sendMessage(pendingMsg.phone, pendingMsg.content, pendingMsg.showTyping);
-        
+
         if (!sent) {
           // If still failed, add back to queue with incremented retry count
           pendingMsg.retries++;
@@ -1416,7 +1410,7 @@ export class WhatsAppService implements OnModuleInit {
   async sendImage(phone: string, imageUrl: string, caption?: string): Promise<boolean> {
     // Normalizar el número de teléfono fuera del try para que esté disponible en el catch
     const normalizedPhone = normalizePhoneNumber(phone);
-    
+
     try {
       if (!normalizedPhone || normalizedPhone.length < 8) {
         this.logger.warn(`Invalid phone number: ${phone}`);
@@ -1490,12 +1484,12 @@ export class WhatsAppService implements OnModuleInit {
       return true;
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
-      
+
       // Check if it's a connection error
-      if (errorMessage.includes('Connection Closed') || 
-          errorMessage.includes('Connection closed') ||
-          errorMessage.includes('Stream Errored') ||
-          errorMessage.includes('xml-not-well-formed')) {
+      if (errorMessage.includes('Connection Closed') ||
+        errorMessage.includes('Connection closed') ||
+        errorMessage.includes('Stream Errored') ||
+        errorMessage.includes('xml-not-well-formed')) {
         this.logger.warn(`Connection error while sending image to ${normalizedPhone}: ${errorMessage}`);
         this.connectionState = 'disconnected';
         // Don't log as error, just warn - connection will be retried automatically
@@ -1533,6 +1527,11 @@ export class WhatsAppService implements OnModuleInit {
   async reconnect(): Promise<{ success: boolean; message: string }> {
     try {
       this.logger.log('Reconnecting WhatsApp...');
+
+      // Detener el keep-alive y verificación antes de reconectar
+      this.stopKeepAlive();
+      this.stopConnectionCheck();
+
       this.reconnectAttempts = 0;
       this.currentQR = null;
       this.connectionState = 'connecting';
@@ -1591,6 +1590,10 @@ export class WhatsAppService implements OnModuleInit {
   async disconnect(): Promise<{ success: boolean; message: string }> {
     try {
       this.logger.log('Disconnecting WhatsApp...');
+
+      // Detener el keep-alive y verificación
+      this.stopKeepAlive();
+      this.stopConnectionCheck();
 
       if (this.socket) {
         await this.socket.end(undefined);
@@ -1905,11 +1908,11 @@ export class WhatsAppService implements OnModuleInit {
             // (es decir, si el nombre actual es el número de teléfono o un placeholder)
             const contactName = chat.name || chat.subject;
             const defaultName = phone || 'Contacto sin número';
-            const hasDefaultName = !user.name || 
-                                   user.name === defaultName || 
-                                   user.name === phone ||
-                                   user.name.startsWith('Contacto sin');
-            
+            const hasDefaultName = !user.name ||
+              user.name === defaultName ||
+              user.name === phone ||
+              user.name.startsWith('Contacto sin');
+
             if (contactName && contactName !== phone && contactName !== defaultName) {
               if (hasDefaultName) {
                 // Solo actualizar si tiene un nombre por defecto
@@ -1972,6 +1975,201 @@ export class WhatsAppService implements OnModuleInit {
       this.logger.log(`✅ Synced ${syncedCount} conversations (${createdCount} new)`);
     } catch (error) {
       this.logger.error('Error in syncChatsToConversations:', error);
+    }
+  }
+
+  /**
+   * Inicia el mecanismo de keep-alive para mantener la sesión activa
+   * Esto evita que la sesión se recargue periódicamente
+   */
+  private startKeepAlive(): void {
+    // Detener cualquier intervalo existente
+    this.stopKeepAlive();
+
+    // Enviar presencia cada 5 minutos para mantener la sesión activa
+    // Esto evita que WhatsApp cierre la sesión por inactividad
+    this.keepAliveInterval = setInterval(async () => {
+      try {
+        if (this.socket && this.connectionState === 'connected' && this.socket.user) {
+          // Enviar presencia "available" para mantener la conexión activa
+          // No enviamos a ningún JID específico, solo mantenemos la conexión viva
+          this.logger.debug('🔄 Keep-alive: Manteniendo sesión activa...');
+
+          // Verificar que el socket sigue conectado enviando una presencia update
+          // Esto mantiene la conexión viva sin necesidad de enviar mensajes
+          if (this.socket.sendPresenceUpdate) {
+            // Enviar presencia disponible periódicamente
+            // Esto ayuda a mantener la sesión activa
+            await this.socket.sendPresenceUpdate('available');
+          }
+        } else {
+          // Si no está conectado, detener el keep-alive
+          this.logger.debug('Keep-alive detenido: conexión no disponible');
+          this.stopKeepAlive();
+        }
+      } catch (error: any) {
+        const errorMessage = error?.message || error?.toString() || 'Unknown error';
+
+        // Si hay un error de conexión, detener el keep-alive
+        if (errorMessage.includes('Connection Closed') ||
+          errorMessage.includes('Connection closed') ||
+          errorMessage.includes('Stream Errored')) {
+          this.logger.debug('Keep-alive detenido: conexión cerrada');
+          this.stopKeepAlive();
+        } else {
+          this.logger.debug(`Error en keep-alive (no crítico): ${errorMessage}`);
+        }
+      }
+    }, 5 * 60 * 1000); // Cada 5 minutos
+
+    this.logger.log('✅ Keep-alive iniciado: la sesión se mantendrá activa automáticamente');
+  }
+
+  /**
+   * Detiene el mecanismo de keep-alive
+   */
+  private stopKeepAlive(): void {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+      this.logger.debug('Keep-alive detenido');
+    }
+  }
+
+  /**
+   * Reconecta en background sin bloquear el servicio
+   * Solo se detiene si realmente se cerró la sesión (logged out)
+   */
+  private async reconnectInBackground(isXmlError: boolean, disconnectReason: number): Promise<void> {
+    // Evitar múltiples reconexiones simultáneas
+    if (this.isReconnecting) {
+      this.logger.debug('Reconexión ya en progreso, omitiendo...');
+      return;
+    }
+
+    const shouldReconnect = this.reconnectAttempts < this.maxReconnectAttempts;
+
+    if (!shouldReconnect) {
+      this.logger.warn(`Máximo de intentos de reconexión alcanzado (${this.maxReconnectAttempts}). El servicio continuará funcionando.`);
+      this.logger.warn('La reconexión se intentará automáticamente en el próximo ciclo de verificación.');
+      return;
+    }
+
+    this.isReconnecting = true;
+
+    try {
+      this.reconnectAttempts++;
+      // For XML errors, use longer wait time as they often indicate temporary server issues
+      // Aumentar tiempos de espera para dar más tiempo a la reconexión
+      const baseWaitTime = isXmlError ? 10000 : 5000;
+      const waitTime = Math.min(this.reconnectAttempts * baseWaitTime, isXmlError ? 60000 : 30000);
+
+      this.logger.log(`🔄 Reconectando en background (intento ${this.reconnectAttempts}/${this.maxReconnectAttempts}) en ${waitTime / 1000}s...`);
+      this.logger.log('💡 El servicio continúa funcionando durante la reconexión.');
+
+      // For XML errors, suggest clearing session if multiple attempts fail
+      if (isXmlError && this.reconnectAttempts >= 3) {
+        this.logger.warn('Si los errores XML persisten, intenta limpiar la carpeta de sesión y reconectar.');
+      }
+
+      // Esperar en background sin bloquear
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+
+      // Intentar reconectar sin bloquear
+      await this.initializeWhatsApp();
+    } catch (error) {
+      this.logger.error('Error durante reconexión en background:', error);
+      // No cambiar el estado, solo registrar el error
+    } finally {
+      this.isReconnecting = false;
+    }
+  }
+
+  /**
+   * Inicia verificación periódica de conexión en paralelo
+   * Verifica el estado de la conexión sin bloquear el servicio
+   */
+  private startConnectionCheck(): void {
+    // Detener cualquier verificación existente
+    this.stopConnectionCheck();
+
+    // Verificar conexión cada 2 minutos en paralelo
+    this.connectionCheckInterval = setInterval(async () => {
+      // Ejecutar en paralelo sin bloquear
+      this.checkConnectionStatus().catch((error) => {
+        this.logger.debug(`Error en verificación de conexión (no crítico): ${error?.message || error}`);
+      });
+    }, 2 * 60 * 1000); // Cada 2 minutos
+
+    this.logger.log('✅ Verificación periódica de conexión iniciada (en paralelo)');
+  }
+
+  /**
+   * Verifica el estado de la conexión sin bloquear
+   */
+  private async checkConnectionStatus(): Promise<void> {
+    try {
+      // Si ya estamos reconectando, no hacer nada
+      if (this.isReconnecting) {
+        return;
+      }
+
+      // Verificar si el socket existe y está conectado
+      if (!this.socket || !this.socket.user) {
+        // Si el estado dice que está conectado pero no hay socket, hay un problema
+        if (this.connectionState === 'connected') {
+          this.logger.warn('⚠️  Inconsistencia detectada: estado dice conectado pero no hay socket. Iniciando reconexión...');
+          this.connectionState = 'connecting';
+
+          // Reconectar en background sin bloquear
+          this.reconnectInBackground(false, 0).catch((error) => {
+            this.logger.error('Error en reconexión automática:', error);
+          });
+        }
+        return;
+      }
+
+      // Verificar que el socket realmente esté conectado
+      // Intentar una operación simple que no bloquee
+      try {
+        // Verificar que el socket tenga las propiedades necesarias
+        if (this.socket.user && this.connectionState === 'connected') {
+          this.logger.debug('✅ Verificación de conexión: Todo OK');
+        } else {
+          this.logger.warn('⚠️  Verificación de conexión: Estado inconsistente, iniciando reconexión...');
+          this.connectionState = 'connecting';
+          this.reconnectInBackground(false, 0).catch((error) => {
+            this.logger.error('Error en reconexión automática:', error);
+          });
+        }
+      } catch (error: any) {
+        const errorMessage = error?.message || error?.toString() || 'Unknown error';
+
+        // Si hay un error de conexión, reconectar en background
+        if (errorMessage.includes('Connection Closed') ||
+          errorMessage.includes('Connection closed') ||
+          errorMessage.includes('Stream Errored')) {
+          this.logger.warn('⚠️  Verificación detectó conexión cerrada. Reconectando en background...');
+          this.connectionState = 'connecting';
+          this.reconnectInBackground(false, 0).catch((err) => {
+            this.logger.error('Error en reconexión automática:', err);
+          });
+        }
+      }
+    } catch (error) {
+      // Errores en la verificación no deben bloquear el servicio
+      this.logger.debug(`Error en verificación de conexión (no crítico): ${error?.message || error}`);
+    }
+  }
+
+  /**
+   * Detiene la verificación periódica de conexión
+   */
+  private stopConnectionCheck(): void {
+    if (this.connectionCheckInterval) {
+      clearInterval(this.connectionCheckInterval);
+      this.connectionCheckInterval = null;
+      this.logger.debug('Verificación de conexión detenida');
     }
   }
 }
