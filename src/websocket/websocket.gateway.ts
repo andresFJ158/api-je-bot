@@ -11,9 +11,29 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 
+// CORS configuration for WebSocket - same as main.ts
+const getWebSocketCorsOrigin = () => {
+  const allowedOrigins = process.env.FRONTEND_URL 
+    ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
+    : ['http://localhost:3030', 'http://localhost:3000'];
+  
+  return (origin: string, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (!origin) {
+      return callback(null, true);
+    }
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    if (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:')) {
+      return callback(null, true);
+    }
+    callback(null, true); // Allow for WebSocket connections
+  };
+};
+
 @NestWebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3030',
+    origin: getWebSocketCorsOrigin(),
     credentials: true,
   },
 })

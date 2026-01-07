@@ -8,9 +8,43 @@ import { join } from 'path';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
+  // CORS configuration - allow multiple origins for development and production
+  // Normalize URLs by removing trailing slashes to avoid CORS mismatches
+  const allowedOrigins = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(',').map(url => url.trim().replace(/\/+$/, ''))
+    : ['http://localhost:3030', 'http://localhost:3000'];
+
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3030',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, Postman, or server-to-server)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Normalize origin by removing trailing slash for comparison
+      const normalizedOrigin = origin.replace(/\/+$/, '');
+
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      // In development, allow localhost on any port
+      if (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:')) {
+        return callback(null, true);
+      }
+
+      // Log blocked origin for debugging
+      console.warn(`CORS blocked origin: ${origin} (normalized: ${normalizedOrigin})`);
+      console.warn(`Allowed origins: ${allowedOrigins.join(', ')}`);
+      callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
 
   app.useGlobalPipes(new ValidationPipe({
