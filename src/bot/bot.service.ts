@@ -91,18 +91,77 @@ export class BotService {
             showLocationInstructions: true,
             prepareOrderInsteadOfCreate: true,
             extractOrderFromContext: true,
-          },
+          } as any, // Use type assertion to allow new fields that may not exist in DB yet
         });
         this.logger.debug('Default bot config created');
       }
 
-      return config;
-    } catch (error) {
+      // Ensure all new message fields are present (set to null if they don't exist in DB yet)
+      const configWithDefaults = {
+        ...config,
+        orderSuccessMessage: (config as any).orderSuccessMessage || null,
+        orderErrorMessage: (config as any).orderErrorMessage || null,
+        orderNotFoundMessage: (config as any).orderNotFoundMessage || null,
+        orderPrepareErrorMessage: (config as any).orderPrepareErrorMessage || null,
+        paymentMethodsMessage: (config as any).paymentMethodsMessage || null,
+        paymentMethodsNotFoundMessage: (config as any).paymentMethodsNotFoundMessage || null,
+        locationDefaultMessage: (config as any).locationDefaultMessage || null,
+        nearestBranchMessage: (config as any).nearestBranchMessage || null,
+        generalErrorMessage: (config as any).generalErrorMessage || null,
+        branchNotFoundMessage: (config as any).branchNotFoundMessage || null,
+        productsRequiredMessage: (config as any).productsRequiredMessage || null,
+        paymentConfirmationMessage: (config as any).paymentConfirmationMessage || null,
+      };
+
+      return configWithDefaults;
+    } catch (error: any) {
       this.logger.error(`Error getting bot config: ${error.message}`);
       this.logger.error(`Error stack: ${error.stack}`);
       if (error.code) {
         this.logger.error(`Error code: ${error.code}`);
       }
+
+      // If error is due to missing columns, try to get config with only existing fields
+      if (error.code === '42703' || error.message?.includes('column') || error.message?.includes('does not exist')) {
+        this.logger.warn('New columns may not exist in database yet. Attempting to fetch with basic fields only...');
+        try {
+          // Use raw query to get only fields that exist
+          const result = await this.prisma.$queryRaw`
+            SELECT 
+              id, "systemPrompt", temperature, "maxTokens", model, "contextMessages", 
+              "classificationCategories", "orderInstructions", "locationInstructions", 
+              "locationKeywords", "autoCreateOrderOnPaymentRequest", "autoSendQRImages",
+              "notifyOrderStatusChanges", "findNearestBranchOnLocationShare", 
+              "showLocationInstructions", "prepareOrderInsteadOfCreate", 
+              "extractOrderFromContext", "updatedAt", "updatedBy"
+            FROM bot_config
+            LIMIT 1
+          ` as any[];
+
+          if (result && result.length > 0) {
+            const basicConfig = result[0];
+            // Add null values for new fields
+            return {
+              ...basicConfig,
+              orderSuccessMessage: null,
+              orderErrorMessage: null,
+              orderNotFoundMessage: null,
+              orderPrepareErrorMessage: null,
+              paymentMethodsMessage: null,
+              paymentMethodsNotFoundMessage: null,
+              locationDefaultMessage: null,
+              nearestBranchMessage: null,
+              generalErrorMessage: null,
+              branchNotFoundMessage: null,
+              productsRequiredMessage: null,
+              paymentConfirmationMessage: null,
+            };
+          }
+        } catch (rawError) {
+          this.logger.error(`Error fetching config with raw query: ${rawError.message}`);
+        }
+      }
+
       throw error;
     }
   }

@@ -73,5 +73,54 @@ export class UpdateBotConfigDto {
   @IsBoolean()
   @IsOptional()
   extractOrderFromContext?: boolean;
+
+  // Configurable messages
+  @IsString()
+  @IsOptional()
+  orderSuccessMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  orderErrorMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  orderNotFoundMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  orderPrepareErrorMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  paymentMethodsMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  paymentMethodsNotFoundMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  locationDefaultMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  nearestBranchMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  generalErrorMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  branchNotFoundMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  productsRequiredMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  paymentConfirmationMessage?: string;
 }
 
