@@ -642,8 +642,8 @@ export class WhatsAppService implements OnModuleInit {
             }
           }
 
-          // Validar longitud mínima
-          if (phone.length < 8) {
+          // Validar longitud mínima (solo si phone no es null después de la validación anterior)
+          if (phone && phone.length < 8) {
             this.logger.warn(`[handleIncomingMessage] Phone number too short (${phone.length} digits): ${phone}. Setting to null. Original JID: ${remoteJid}`);
             phone = null;
           }
@@ -655,7 +655,7 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         // Log adicional para números sospechosos (más de 12 dígitos)
-        if (phone.length > 12) {
+        if (phone && phone.length > 12) {
           this.logger.warn(`[handleIncomingMessage] WARNING: Phone number has ${phone.length} digits (might be incorrect): ${phone}. Original JID: ${remoteJid}`);
         }
 
