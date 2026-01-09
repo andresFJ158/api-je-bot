@@ -693,7 +693,8 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         // Log adicional para números sospechosos (más de 12 dígitos)
-        if (phone.length > 12) {
+        // Verificar que phone no sea null antes de acceder a length
+        if (phone && phone.length > 12) {
           this.logger.warn(`[handleIncomingMessage] WARNING: Phone number has ${phone.length} digits (might be incorrect): ${phone}. Original JID: ${remoteJid}`);
         }
 
