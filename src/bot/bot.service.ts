@@ -117,6 +117,18 @@ export class BotService {
     orderInstructions?: string;
     locationInstructions?: string;
     locationKeywords?: string;
+    orderSuccessMessage?: string;
+    orderErrorMessage?: string;
+    orderNotFoundMessage?: string;
+    orderPrepareErrorMessage?: string;
+    paymentMethodsMessage?: string;
+    paymentMethodsNotFoundMessage?: string;
+    locationDefaultMessage?: string;
+    nearestBranchMessage?: string;
+    generalErrorMessage?: string;
+    branchNotFoundMessage?: string;
+    productsRequiredMessage?: string;
+    paymentConfirmationMessage?: string;
     autoCreateOrderOnPaymentRequest?: boolean;
     autoSendQRImages?: boolean;
     notifyOrderStatusChanges?: boolean;
@@ -139,6 +151,19 @@ export class BotService {
           orderInstructions: data.orderInstructions,
           locationInstructions: data.locationInstructions,
           locationKeywords: data.locationKeywords,
+          // New configurable message fields - using type assertion until Prisma Client is regenerated
+          ...(data.orderSuccessMessage && { orderSuccessMessage: data.orderSuccessMessage } as any),
+          ...(data.orderErrorMessage && { orderErrorMessage: data.orderErrorMessage } as any),
+          ...(data.orderNotFoundMessage && { orderNotFoundMessage: data.orderNotFoundMessage } as any),
+          ...(data.orderPrepareErrorMessage && { orderPrepareErrorMessage: data.orderPrepareErrorMessage } as any),
+          ...(data.paymentMethodsMessage && { paymentMethodsMessage: data.paymentMethodsMessage } as any),
+          ...(data.paymentMethodsNotFoundMessage && { paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage } as any),
+          ...(data.locationDefaultMessage && { locationDefaultMessage: data.locationDefaultMessage } as any),
+          ...(data.nearestBranchMessage && { nearestBranchMessage: data.nearestBranchMessage } as any),
+          ...(data.generalErrorMessage && { generalErrorMessage: data.generalErrorMessage } as any),
+          ...(data.branchNotFoundMessage && { branchNotFoundMessage: data.branchNotFoundMessage } as any),
+          ...(data.productsRequiredMessage && { productsRequiredMessage: data.productsRequiredMessage } as any),
+          ...(data.paymentConfirmationMessage && { paymentConfirmationMessage: data.paymentConfirmationMessage } as any),
           autoCreateOrderOnPaymentRequest: data.autoCreateOrderOnPaymentRequest ?? false,
           autoSendQRImages: data.autoSendQRImages ?? true,
           notifyOrderStatusChanges: data.notifyOrderStatusChanges ?? true,
@@ -146,12 +171,15 @@ export class BotService {
           showLocationInstructions: data.showLocationInstructions ?? true,
           prepareOrderInsteadOfCreate: data.prepareOrderInsteadOfCreate ?? true,
           extractOrderFromContext: data.extractOrderFromContext ?? true,
-        },
+        } as any,
       });
     } else {
       config = await this.prisma.botConfig.update({
         where: { id: config.id },
-        data,
+        data: {
+          ...data,
+          // Only update fields that are provided
+        },
       });
     }
 
@@ -455,7 +483,9 @@ export class BotService {
         });
 
         if (paymentMethods.length > 0) {
-          response = `💳 Métodos de Pago Disponibles:\n\n`;
+          // Use configured message or build default
+          const paymentMethodsText = (config as any).paymentMethodsMessage || `💳 Métodos de Pago Disponibles:\n\n`;
+          response = paymentMethodsText;
 
           const qrMethods = paymentMethods.filter(pm => pm.type === 'QR');
           const bankMethods = paymentMethods.filter(pm => pm.type === 'BANK_ACCOUNT');
@@ -484,9 +514,10 @@ export class BotService {
             response += `\n`;
           }
 
-          response += `Por favor, confirma con qué método deseas pagar para proceder con tu pedido. 😊`;
+          const confirmationText = (config as any).paymentConfirmationMessage || `Por favor, confirma con qué método deseas pagar para proceder con tu pedido. 😊`;
+          response += confirmationText;
         } else {
-          response = `No hay métodos de pago configurados en este momento. Por favor, contacta con un agente para más información.`;
+          response = (config as any).paymentMethodsNotFoundMessage || `No hay métodos de pago configurados en este momento. Por favor, contacta con un agente para más información.`;
         }
       }
 
@@ -558,13 +589,15 @@ export class BotService {
               (response as any).qrMethods = qrMethods;
             }
 
-            response += `Gracias por tu pedido. Te contactaremos pronto para confirmar el pago. 😊`;
+            const thankYouMessage = (config as any).paymentConfirmationMessage || `Gracias por tu pedido. Te contactaremos pronto para confirmar el pago. 😊`;
+            response += thankYouMessage;
           } else {
-            response = `❌ Error al crear el pedido: ${orderResult.error}\n\nPor favor, verifica la información e intenta de nuevo.`;
+            const errorMessage = (config as any).orderErrorMessage || `❌ Error al crear el pedido: ${orderResult.error}\n\nPor favor, verifica la información e intenta de nuevo.`;
+            response = errorMessage.replace(/\$\{error\}/g, orderResult.error || 'Error desconocido');
           }
         } else {
           // No order info found, ask user to provide order details first
-          response = `No encuentro información de tu pedido. Por favor, primero indica los productos y la sucursal, luego pregunta por los métodos de pago.`;
+          response = (config as any).orderNotFoundMessage || `No encuentro información de tu pedido. Por favor, primero indica los productos y la sucursal, luego pregunta por los métodos de pago.`;
         }
       }
 
@@ -620,13 +653,15 @@ export class BotService {
               }
             }
 
-            response += `Gracias por tu pedido. Te contactaremos pronto para confirmar el pago. 😊`;
+            const thankYouMessage = (config as any).paymentConfirmationMessage || `Gracias por tu pedido. Te contactaremos pronto para confirmar el pago. 😊`;
+            response += thankYouMessage;
           } else {
-            response = `❌ Error al crear el pedido: ${orderResult.error}\n\nPor favor, verifica la información e intenta de nuevo.`;
+            const errorMessage = (config as any).orderErrorMessage || `❌ Error al crear el pedido: ${orderResult.error}\n\nPor favor, verifica la información e intenta de nuevo.`;
+            response = errorMessage.replace(/\$\{error\}/g, orderResult.error || 'Error desconocido');
           }
         } catch (error) {
           this.logger.error('Error handling create_order function:', error);
-          response = `❌ Lo siento, hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta con un agente.`;
+          response = (config as any).orderPrepareErrorMessage || (config as any).generalErrorMessage || `❌ Lo siento, hubo un error al procesar tu pedido. Por favor, intenta de nuevo o contacta con un agente.`;
         }
       }
 
@@ -681,25 +716,26 @@ export class BotService {
             );
 
             if (!branch) {
-              response = `❌ No encontré la sucursal "${args.branchName}". Por favor, verifica el nombre e intenta de nuevo.`;
+              const branchNotFoundMsg = (config as any).branchNotFoundMessage || `❌ No encontré la sucursal "${args.branchName}". Por favor, verifica el nombre e intenta de nuevo.`;
+              response = branchNotFoundMsg.replace('${branchName}', args.branchName || '');
             } else {
               response = `📋 Resumen de tu pedido:\n\n` +
                 `🏢 Sucursal: ${branch.name}\n` +
                 `📦 Productos:\n${itemsSummary.map((item, idx) => `${idx + 1}. ${item}`).join('\n')}\n\n` +
                 `💰 Total: Bs.${total.toFixed(2)}\n\n` +
-                `Para proceder con el pago, pregunta por los métodos de pago disponibles. Una vez que elijas un método, crearemos tu pedido. 😊`;
+                ((config as any).paymentConfirmationMessage || `Para proceder con el pago, pregunta por los métodos de pago disponibles. Una vez que elijas un método, crearemos tu pedido. 😊`);
             }
           }
           // Invalid state - should have items
           else {
-            response = `Por favor, indica los productos que deseas ordenar.`;
+            response = (config as any).productsRequiredMessage || `Por favor, indica los productos que deseas ordenar.`;
           }
 
           // Store order info in response metadata for later use
           (response as any).preparedOrder = args;
         } catch (error) {
           this.logger.error('Error handling prepare_order function:', error);
-          response = `❌ Lo siento, hubo un error al preparar tu pedido. Por favor, intenta de nuevo o contacta con un agente.`;
+          response = (config as any).orderPrepareErrorMessage || (config as any).generalErrorMessage || `❌ Lo siento, hubo un error al preparar tu pedido. Por favor, intenta de nuevo o contacta con un agente.`;
         }
       }
 
@@ -725,8 +761,8 @@ export class BotService {
             // Replace the entire response with the configured location instructions
             response = locationInstructionsText;
           } else {
-            // If config only has the default instruction format, use default message
-            response = `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
+            // If config only has the default instruction format, use configured default message
+            response = (config as any).locationDefaultMessage || config.locationInstructions || `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
 
 **¿Cómo compartir tu ubicación desde Google Maps?**
 1.  Abre la aplicación **Google Maps** en tu teléfono.
@@ -754,7 +790,7 @@ export class BotService {
           }
         } else {
           // Default instructions if no custom instructions are configured
-          response = `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
+          response = (config as any).locationDefaultMessage || config.locationInstructions || `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
 
 **¿Cómo compartir tu ubicación desde Google Maps?**
 1.  Abre la aplicación **Google Maps** en tu teléfono.
@@ -795,7 +831,9 @@ export class BotService {
 
             if (nearestBranch) {
               const distanceKm = nearestBranch.distance.toFixed(2);
-              response += `\n\n📍 Sucursal más cercana a tu ubicación:\n\n` +
+              // Use configured message or build default
+              const nearestBranchMsg = (config as any).nearestBranchMessage || `\n\n📍 Sucursal más cercana a tu ubicación:\n\n`;
+              response += nearestBranchMsg +
                 `🏢 ${nearestBranch.name}\n` +
                 `📍 ${nearestBranch.address}\n` +
                 `📞 ${nearestBranch.phone || 'No disponible'}\n` +
@@ -833,7 +871,13 @@ export class BotService {
       }
 
       console.error('Error generating bot response:', error);
-      return 'Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.';
+      // Get config for error message (may fail, so use try-catch)
+      try {
+        const errorConfig = await this.getBotConfig();
+        return (errorConfig as any).generalErrorMessage || 'Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.';
+      } catch {
+        return 'Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.';
+      }
     }
   }
 

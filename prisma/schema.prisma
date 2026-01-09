@@ -97,6 +97,19 @@ model BotConfig {
   orderInstructions                String?  @db.Text
   locationInstructions             String?  @db.Text
   locationKeywords                 String?  @db.Text
+  // Configurable messages
+  orderSuccessMessage              String?  @db.Text
+  orderErrorMessage                String?  @db.Text
+  orderNotFoundMessage             String?  @db.Text
+  orderPrepareErrorMessage         String?  @db.Text
+  paymentMethodsMessage            String?  @db.Text
+  paymentMethodsNotFoundMessage    String?  @db.Text
+  locationDefaultMessage           String?  @db.Text
+  nearestBranchMessage             String?  @db.Text
+  generalErrorMessage              String?  @db.Text
+  branchNotFoundMessage            String?  @db.Text
+  productsRequiredMessage          String?  @db.Text
+  paymentConfirmationMessage       String?  @db.Text
   // Feature flags for bot rules
   autoCreateOrderOnPaymentRequest  Boolean  @default(true)
   autoSendQRImages                 Boolean  @default(true)
