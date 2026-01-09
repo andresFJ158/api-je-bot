@@ -1121,9 +1121,6 @@ export class BotService {
    */
   private async findFAQMatch(userMessage: string): Promise<{ question: string; answer: string } | null> {
     try {
-      // Normalizar el mensaje del usuario para comparación
-      const normalizedMessage = userMessage.toLowerCase().trim();
-
       // Obtener todas las FAQs activas
       // Note: Prisma converts model name 'FAQ' to 'fAQ' in the client
       let faqs: any[] = [];
@@ -1145,56 +1142,105 @@ export class BotService {
         return null;
       }
 
-      // Buscar coincidencia exacta o por palabras clave
-      for (const faq of faqs) {
-        // Normalizar la pregunta
-        const normalizedQuestion = faq.question.toLowerCase().trim();
+      // Usar IA para detectar si el mensaje corresponde a alguna FAQ
+      const matchedFAQ = await this.detectFAQWithAI(userMessage, faqs);
 
-        // 1. Coincidencia exacta (ignorando mayúsculas/minúsculas)
-        if (normalizedMessage === normalizedQuestion) {
-          this.logger.debug(`[findFAQMatch] Exact match found: "${faq.question}"`);
-          return { question: faq.question, answer: faq.answer };
-        }
-
-        // 2. Coincidencia por palabras clave si están definidas
-        if (faq.keywords && faq.keywords.length > 0) {
-          const messageWords = normalizedMessage.split(/\s+/);
-          const keywordMatches = faq.keywords.filter(keyword => {
-            const normalizedKeyword = keyword.toLowerCase().trim();
-            // Verificar si la palabra clave está en el mensaje
-            return messageWords.some(word => word.includes(normalizedKeyword) || normalizedKeyword.includes(word)) ||
-              normalizedMessage.includes(normalizedKeyword);
-          });
-
-          // Si al menos el 50% de las palabras clave coinciden, considerar match
-          if (keywordMatches.length >= Math.ceil(faq.keywords.length * 0.5)) {
-            this.logger.debug(`[findFAQMatch] Keyword match found: "${faq.question}" (${keywordMatches.length}/${faq.keywords.length} keywords)`);
-            return { question: faq.question, answer: faq.answer };
-          }
-        }
-
-        // 3. Coincidencia parcial - verificar si la pregunta está contenida en el mensaje o viceversa
-        if (normalizedMessage.includes(normalizedQuestion) || normalizedQuestion.includes(normalizedMessage)) {
-          // Solo considerar match si la pregunta o mensaje tienen al menos 5 caracteres para evitar falsos positivos
-          if (normalizedQuestion.length >= 5 || normalizedMessage.length >= 5) {
-            this.logger.debug(`[findFAQMatch] Partial match found: "${faq.question}"`);
-            return { question: faq.question, answer: faq.answer };
-          }
-        }
-
-        // 4. Coincidencia por palabras importantes (al menos 3 palabras en común)
-        const questionWords = normalizedQuestion.split(/\s+/).filter(w => w.length > 3); // Palabras de más de 3 caracteres
-        const commonWords = questionWords.filter(qw => normalizedMessage.includes(qw));
-
-        if (commonWords.length >= 3 && commonWords.length >= questionWords.length * 0.6) {
-          this.logger.debug(`[findFAQMatch] Word match found: "${faq.question}" (${commonWords.length} common words)`);
-          return { question: faq.question, answer: faq.answer };
-        }
+      if (matchedFAQ) {
+        this.logger.log(`[findFAQMatch] AI detected FAQ match: "${matchedFAQ.question}" - Returning predefined answer`);
+        return { question: matchedFAQ.question, answer: matchedFAQ.answer };
       }
 
       return null;
     } catch (error) {
       this.logger.error(`[findFAQMatch] Error searching FAQs: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Usa IA para detectar si el mensaje del usuario corresponde a alguna FAQ
+   * @param userMessage Mensaje del usuario
+   * @param faqs Lista de FAQs activas
+   * @returns La FAQ que mejor coincide con el mensaje, o null si no hay coincidencia
+   */
+  private async detectFAQWithAI(userMessage: string, faqs: any[]): Promise<{ question: string; answer: string } | null> {
+    try {
+      // Si no hay API key configurada, retornar null
+      const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        this.logger.warn('[detectFAQWithAI] No API key found, skipping AI detection');
+        return null;
+      }
+
+      // Construir el prompt para la IA
+      const faqList = faqs.map((faq, index) => {
+        const keywords = faq.keywords && faq.keywords.length > 0
+          ? `Palabras clave: ${faq.keywords.join(', ')}`
+          : '';
+        return `${index + 1}. Pregunta: "${faq.question}"${keywords ? `\n   ${keywords}` : ''}`;
+      }).join('\n\n');
+
+      const prompt = `Eres un asistente que ayuda a identificar si un mensaje del usuario corresponde a alguna de las siguientes preguntas frecuentes (FAQs).
+
+FAQs disponibles:
+${faqList}
+
+Mensaje del usuario: "${userMessage}"
+
+INSTRUCCIONES:
+1. Analiza el mensaje del usuario y determina si corresponde a alguna de las FAQs listadas.
+2. Considera el significado y la intención del mensaje, no solo palabras exactas.
+3. Si el mensaje corresponde a una FAQ, responde SOLO con el número de la FAQ (ej: "1", "2", "3", etc.).
+4. Si el mensaje NO corresponde a ninguna FAQ, responde SOLO con "0".
+5. Responde ÚNICAMENTE con el número, sin explicaciones ni texto adicional.
+
+Respuesta:`;
+
+      this.logger.debug(`[detectFAQWithAI] Sending request to AI to detect FAQ match for message: "${userMessage.substring(0, 50)}..."`);
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'deepseek-chat',
+        messages: [
+          {
+            role: 'system',
+            content: 'Eres un asistente experto en identificar si un mensaje corresponde a una pregunta frecuente. Responde solo con el número de la FAQ (1, 2, 3, etc.) o 0 si no hay coincidencia.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.3, // Baja temperatura para respuestas más consistentes
+        max_tokens: 10, // Solo necesitamos un número
+      });
+
+      const aiResponse = completion.choices[0]?.message?.content?.trim() || '';
+      this.logger.debug(`[detectFAQWithAI] AI response: "${aiResponse}"`);
+
+      // Extraer el número de la respuesta (puede venir como "1", "FAQ 1", "La FAQ 1 es", etc.)
+      const match = aiResponse.match(/\d+/);
+      if (match) {
+        const faqIndex = parseInt(match[0], 10);
+
+        // Validar que el índice esté en el rango válido
+        if (faqIndex >= 1 && faqIndex <= faqs.length) {
+          const matchedFAQ = faqs[faqIndex - 1]; // Convertir a índice base 0
+          this.logger.log(`[detectFAQWithAI] ✅ AI matched message to FAQ #${faqIndex}: "${matchedFAQ.question}"`);
+          return { question: matchedFAQ.question, answer: matchedFAQ.answer };
+        } else if (faqIndex === 0) {
+          this.logger.debug(`[detectFAQWithAI] AI determined message does not match any FAQ`);
+          return null;
+        } else {
+          this.logger.warn(`[detectFAQWithAI] AI returned invalid FAQ index: ${faqIndex} (valid range: 1-${faqs.length})`);
+          return null;
+        }
+      } else {
+        this.logger.warn(`[detectFAQWithAI] Could not extract FAQ number from AI response: "${aiResponse}"`);
+        return null;
+      }
+    } catch (error: any) {
+      this.logger.error(`[detectFAQWithAI] Error using AI to detect FAQ: ${error.message}`);
+      // En caso de error, retornar null para que el flujo continúe normalmente
       return null;
     }
   }

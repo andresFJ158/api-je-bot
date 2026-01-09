@@ -835,10 +835,14 @@ export class WhatsAppService implements OnModuleInit {
         let user = null;
 
         if (phone) {
-          // Buscar por phone si existe
-          user = await this.prisma.user.findUnique({
-            where: { phone },
-          });
+          // Normalizar el phone antes de buscar
+          const normalizedPhone = normalizePhoneNumber(phone);
+          if (normalizedPhone && normalizedPhone.length >= 8) {
+            // Buscar por phone normalizado si existe
+            user = await this.prisma.user.findUnique({
+              where: { phone: normalizedPhone },
+            });
+          }
         }
 
         // Si no se encontró por phone, buscar por whatsappJid
@@ -849,15 +853,18 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         if (!user) {
+          // Normalizar el phone antes de guardarlo
+          const normalizedPhone = phone ? normalizePhoneNumber(phone) : null;
+          
           // Crear nuevo usuario con phone null si no se pudo extraer
           user = await this.prisma.user.create({
             data: {
-              phone: phone || null, // Guardar como null si no se pudo extraer
+              phone: normalizedPhone, // Guardar normalizado o null si no se pudo extraer
               name: contactName,
               whatsappJid: originalJidForSending, // Guardar el JID completo
             },
           });
-          this.logger.log(`[handleIncomingMessage] Created user with phone: ${phone || 'null'}, name: ${contactName}, JID: ${originalJidForSending}`);
+          this.logger.log(`[handleIncomingMessage] Created user with phone: ${normalizedPhone || 'null'}, name: ${contactName}, JID: ${originalJidForSending}`);
         } else {
           // Update user phone and JID if needed, but DON'T update name if it's already set
           const updateData: any = {};
@@ -882,10 +889,24 @@ export class WhatsAppService implements OnModuleInit {
             this.logger.debug(`[handleIncomingMessage] Contact already has name "${user.name}", not updating to "${contactName}"`);
           }
 
-          // Actualizar phone si el usuario no tiene phone y ahora lo tenemos
-          if (!user.phone && phone) {
-            updateData.phone = phone;
-            this.logger.log(`[handleIncomingMessage] ✅ Adding phone number to user: ${phone}`);
+          // Actualizar phone si:
+          // 1. El usuario no tiene phone y ahora lo tenemos
+          // 2. El usuario tiene phone null y ahora tenemos un número válido
+          // 3. El usuario tiene un phone pero ahora tenemos uno mejor (normalizado y válido)
+          if (phone) {
+            const normalizedPhone = normalizePhoneNumber(phone);
+            // Solo actualizar si el phone normalizado es válido (al menos 8 dígitos)
+            if (normalizedPhone && normalizedPhone.length >= 8) {
+              // Actualizar si no tiene phone, tiene null, o si el nuevo phone es diferente al actual
+              if (!user.phone || user.phone === null || normalizedPhone !== user.phone) {
+                updateData.phone = normalizedPhone;
+                this.logger.log(`[handleIncomingMessage] ✅ Updating phone number for user: ${user.phone || 'null'} -> ${normalizedPhone}`);
+              } else {
+                this.logger.debug(`[handleIncomingMessage] Phone number already set correctly: ${normalizedPhone}`);
+              }
+            } else {
+              this.logger.warn(`[handleIncomingMessage] ⚠️ Phone number "${phone}" normalized to "${normalizedPhone}" is too short (${normalizedPhone?.length || 0} digits), not updating`);
+            }
           }
 
           // Actualizar el JID si no existe o si es diferente (especialmente si ahora tenemos un JID real)
