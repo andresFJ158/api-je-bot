@@ -1279,16 +1279,28 @@ export class WhatsAppService implements OnModuleInit {
    * Maneja el evento contacts.upsert de Baileys
    * Este evento se dispara cuando WhatsApp revela información de contactos,
    * incluyendo la relación entre LID (@lid) y número real (@s.whatsapp.net)
+   * 
+   * Flujo en WhatsApp 2026:
+   * 1️⃣ Primer mensaje: llega con LID (168788003663937@lid) - nombre ✔, número ❌
+   * 2️⃣ Evento posterior contacts.upsert: { id: "5917XXXXXXXX@s.whatsapp.net", lid: "168788003663937@lid" }
    */
   private async handleContactsUpsert(contacts: any[]): Promise<void> {
     if (!contacts || contacts.length === 0) {
       return;
     }
 
-    this.logger.debug(`[handleContactsUpsert] Processing ${contacts.length} contact(s)`);
+    this.logger.log(`[handleContactsUpsert] 📞 Processing ${contacts.length} contact(s) from WhatsApp`);
 
     for (const contact of contacts) {
       try {
+        // Log completo del contacto para debugging
+        this.logger.debug(`[handleContactsUpsert] Contact data: ${JSON.stringify({
+          id: contact.id,
+          lid: contact.lid,
+          notify: contact.notify,
+          name: contact.name,
+        })}`);
+
         // El contacto puede tener:
         // - id: "5491123456789@s.whatsapp.net" (número real)
         // - lid: "168788003663937@lid" (Linked ID)
@@ -1296,6 +1308,7 @@ export class WhatsAppService implements OnModuleInit {
         const contactLid = contact.lid;
 
         if (!contactId) {
+          this.logger.debug(`[handleContactsUpsert] Skipping contact - no id field`);
           continue;
         }
 
@@ -1310,9 +1323,11 @@ export class WhatsAppService implements OnModuleInit {
 
           this.logger.log(`[handleContactsUpsert] ✅ Found contact with real phone: ${realPhone} (JID: ${contactId})`);
 
-          // Si también tiene LID, buscar usuarios con ese LID y actualizarlos
+          // 🎯 CASO PRINCIPAL: Si también tiene LID, buscar usuarios con ese LID y actualizarlos
+          // Este es el caso típico: WhatsApp revela el número real relacionado con el LID
           if (contactLid && contactLid.endsWith('@lid')) {
-            this.logger.log(`[handleContactsUpsert] Contact also has LID: ${contactLid}, searching for users with this LID...`);
+            this.logger.log(`[handleContactsUpsert] 🔗 Contact has both real phone (${realPhone}) and LID (${contactLid})`);
+            this.logger.log(`[handleContactsUpsert] 🔍 Searching for users with LID: ${contactLid}...`);
 
             // Buscar usuarios que tengan este LID en whatsappJid
             const usersWithLid = await this.prisma.user.findMany({
@@ -1322,7 +1337,8 @@ export class WhatsAppService implements OnModuleInit {
             });
 
             if (usersWithLid.length > 0) {
-              this.logger.log(`[handleContactsUpsert] Found ${usersWithLid.length} user(s) with LID ${contactLid}, updating with real phone: ${realPhone}`);
+              this.logger.log(`[handleContactsUpsert] ✅ Found ${usersWithLid.length} user(s) with LID ${contactLid}`);
+              this.logger.log(`[handleContactsUpsert] 📝 Updating with real phone: ${realPhone} and JID: ${contactId}`);
 
               // Actualizar cada usuario encontrado
               for (const user of usersWithLid) {
@@ -1340,7 +1356,7 @@ export class WhatsAppService implements OnModuleInit {
 
                 if (hasDefaultName && contact.notify) {
                   updateData.name = contact.notify.trim();
-                  this.logger.log(`[handleContactsUpsert] Also updating name to: ${updateData.name}`);
+                  this.logger.log(`[handleContactsUpsert] 📝 Also updating name: "${user.name}" -> "${updateData.name}"`);
                 }
 
                 await this.prisma.user.update({
@@ -1348,10 +1364,12 @@ export class WhatsAppService implements OnModuleInit {
                   data: updateData,
                 });
 
-                this.logger.log(`[handleContactsUpsert] ✅ Updated user ${user.id}: phone ${user.phone || 'null'} -> ${realPhone}, JID ${user.whatsappJid} -> ${contactId}`);
+                this.logger.log(`[handleContactsUpsert] ✅ SUCCESS: Updated user ${user.id}`);
+                this.logger.log(`[handleContactsUpsert]    Phone: ${user.phone || 'null'} -> ${realPhone}`);
+                this.logger.log(`[handleContactsUpsert]    JID: ${user.whatsappJid} -> ${contactId}`);
               }
             } else {
-              this.logger.debug(`[handleContactsUpsert] No users found with LID ${contactLid}`);
+              this.logger.warn(`[handleContactsUpsert] ⚠️ No users found with LID ${contactLid} - contact may not have sent a message yet`);
             }
           }
 
