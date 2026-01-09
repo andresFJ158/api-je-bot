@@ -4,8 +4,8 @@ FROM node:20.19.0-alpine
 # Set working directory
 WORKDIR /app
 
-# Install git and OpenSSL 1.1 compatibility (required for npm packages and Prisma)
-RUN apk add --no-cache git openssl openssl1.1-compat
+# Install git and OpenSSL (required for npm packages and Prisma)
+RUN apk add --no-cache git openssl
 
 # Install dependencies first (for better caching)
 COPY package*.json ./
