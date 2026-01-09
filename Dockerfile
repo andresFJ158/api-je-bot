@@ -1,5 +1,5 @@
-# Use Node.js LTS version with Alpine 3.18 (supports OpenSSL 1.1 for Prisma)
-FROM node:20-alpine3.18
+# Use Node.js 20.19.0+ (required for Prisma 7) with Alpine
+FROM node:20.19.0-alpine
 
 # Set working directory
 WORKDIR /app

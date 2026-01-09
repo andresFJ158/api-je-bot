@@ -198,7 +198,60 @@ export class BotService {
   }) {
     try {
       this.logger.debug('[updateBotConfig] Iniciando actualización de configuración');
-      let config = await this.prisma.botConfig.findFirst();
+
+      // Try to get config - use raw query first to avoid errors if new columns don't exist
+      // This is safer than using findFirst() which may try to validate all fields
+      let config: any = null;
+      try {
+        // First try with raw query to get only existing fields
+        const result = await this.prisma.$queryRaw`
+          SELECT 
+            id, "systemPrompt", temperature, "maxTokens", model, "contextMessages", 
+            "classificationCategories", "orderInstructions", "locationInstructions", 
+            "locationKeywords", "autoCreateOrderOnPaymentRequest", "autoSendQRImages",
+            "notifyOrderStatusChanges", "findNearestBranchOnLocationShare", 
+            "showLocationInstructions", "prepareOrderInsteadOfCreate", 
+            "extractOrderFromContext", "updatedAt", "updatedBy"
+          FROM bot_config
+          LIMIT 1
+        ` as any[];
+
+        if (result && result.length > 0) {
+          config = result[0];
+        }
+      } catch (rawError: any) {
+        // If raw query fails, try with Prisma select (in case schema is updated)
+        this.logger.warn('[updateBotConfig] Raw query failed, trying Prisma select...');
+        try {
+          config = await this.prisma.botConfig.findFirst({
+            select: {
+              id: true,
+              systemPrompt: true,
+              temperature: true,
+              maxTokens: true,
+              model: true,
+              contextMessages: true,
+              classificationCategories: true,
+              orderInstructions: true,
+              locationInstructions: true,
+              locationKeywords: true,
+              autoCreateOrderOnPaymentRequest: true,
+              autoSendQRImages: true,
+              notifyOrderStatusChanges: true,
+              findNearestBranchOnLocationShare: true,
+              showLocationInstructions: true,
+              prepareOrderInsteadOfCreate: true,
+              extractOrderFromContext: true,
+              updatedAt: true,
+              updatedBy: true,
+            },
+          });
+        } catch (prismaError: any) {
+          // If both fail, log and rethrow
+          this.logger.error(`[updateBotConfig] Both raw query and Prisma select failed: ${prismaError.message}`);
+          throw prismaError;
+        }
+      }
 
       if (!config) {
         // Create new config - only use fields that exist in DB
