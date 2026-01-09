@@ -974,7 +974,8 @@ export class WhatsAppService implements OnModuleInit {
           this.logger.log(`[handleIncomingMessage] Processing bot response for new message from ${phone} in conversation ${updatedConversation.id}`);
 
           // Show typing indicator immediately - use updatedConversation user data
-          const userPhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
+          // Use whatsappJid if phone is null (for LID JIDs)
+          const userPhone = updatedConversation.user?.whatsappJid || updatedConversation.user?.phone || conversation.user?.whatsappJid || conversation.user?.phone || phone;
           await this.sendTypingIndicator(userPhone, true);
 
           let botResponse: string | null = null;
@@ -1092,7 +1093,8 @@ export class WhatsAppService implements OnModuleInit {
                         await new Promise(resolve => setTimeout(resolve, 1000));
 
                         const caption = qrMethod.name + (qrMethod.description ? `\n${qrMethod.description}` : '');
-                        const imagePhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
+                        // Use whatsappJid if phone is null (for LID JIDs)
+                        const imagePhone = updatedConversation.user?.whatsappJid || updatedConversation.user?.phone || conversation.user?.whatsappJid || conversation.user?.phone || phone;
                         await this.sendImage(imagePhone, qrMethod.qrImageUrl, caption);
                       }
                     }
@@ -1105,14 +1107,16 @@ export class WhatsAppService implements OnModuleInit {
             } else {
               this.logger.warn(`[handleIncomingMessage] No bot response generated for message from ${phone}`);
               // Stop typing indicator if no response
-              const stopTypingPhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
+              // Use whatsappJid if phone is null (for LID JIDs)
+              const stopTypingPhone = updatedConversation.user?.whatsappJid || updatedConversation.user?.phone || conversation.user?.whatsappJid || conversation.user?.phone || phone;
               await this.sendTypingIndicator(stopTypingPhone, false);
             }
           } catch (error) {
             this.logger.error(`[handleIncomingMessage] Error generating bot response for ${phone}:`, error);
             this.logger.error(`[handleIncomingMessage] Error stack:`, error?.stack);
             // Stop typing indicator on error
-            const stopTypingPhone = updatedConversation.user?.phone || conversation.user?.phone || phone;
+            // Use whatsappJid if phone is null (for LID JIDs)
+            const stopTypingPhone = updatedConversation.user?.whatsappJid || updatedConversation.user?.phone || conversation.user?.whatsappJid || conversation.user?.phone || phone;
             await this.sendTypingIndicator(stopTypingPhone, false);
           }
         } else {
@@ -1139,7 +1143,13 @@ export class WhatsAppService implements OnModuleInit {
   }
 
   // Send typing indicator (writing/typing effect)
-  async sendTypingIndicator(phone: string, isTyping: boolean = true): Promise<boolean> {
+  async sendTypingIndicator(phone: string | null, isTyping: boolean = true): Promise<boolean> {
+    // Si phone es null, no podemos enviar el indicador
+    if (!phone) {
+      this.logger.warn(`[sendTypingIndicator] Cannot send typing indicator: phone is null`);
+      return false;
+    }
+
     // Si el phone ya es un JID completo (tiene @), usarlo directamente
     let jid = '';
     if (phone.includes('@')) {
@@ -1210,7 +1220,13 @@ export class WhatsAppService implements OnModuleInit {
     }
   }
 
-  async sendMessage(phone: string, content: string, showTyping: boolean = false): Promise<boolean> {
+  async sendMessage(phone: string | null, content: string, showTyping: boolean = false): Promise<boolean> {
+    // Si phone es null, no podemos enviar el mensaje
+    if (!phone) {
+      this.logger.warn(`[sendMessage] Cannot send message: phone is null`);
+      return false;
+    }
+
     // Si el phone ya es un JID completo (tiene @), usarlo directamente
     let jid = '';
     if (phone.includes('@')) {
@@ -1407,16 +1423,50 @@ export class WhatsAppService implements OnModuleInit {
     }
   }
 
-  async sendImage(phone: string, imageUrl: string, caption?: string): Promise<boolean> {
-    // Normalizar el número de teléfono fuera del try para que esté disponible en el catch
-    const normalizedPhone = normalizePhoneNumber(phone);
+  async sendImage(phone: string | null, imageUrl: string, caption?: string): Promise<boolean> {
+    // Si phone es null, no podemos enviar la imagen
+    if (!phone) {
+      this.logger.warn(`[sendImage] Cannot send image: phone is null`);
+      return false;
+    }
 
-    try {
+    // Si el phone ya es un JID completo (tiene @), usarlo directamente
+    let jid = '';
+    if (phone.includes('@')) {
+      jid = phone;
+      this.logger.debug(`[sendImage] Using provided JID directly: ${jid}`);
+    } else {
+      // Normalizar el número de teléfono
+      const normalizedPhone = normalizePhoneNumber(phone);
+
       if (!normalizedPhone || normalizedPhone.length < 8) {
-        this.logger.warn(`Invalid phone number: ${phone}`);
+        this.logger.warn(`[sendImage] Invalid phone number: ${phone}`);
         return false;
       }
 
+      // Intentar obtener el JID guardado en la BD para este número
+      try {
+        const user = await this.prisma.user.findUnique({
+          where: { phone: normalizedPhone },
+          select: { whatsappJid: true },
+        });
+
+        if (user?.whatsappJid) {
+          jid = user.whatsappJid;
+          this.logger.debug(`[sendImage] Using saved JID from database: ${jid} for phone: ${normalizedPhone}`);
+        } else {
+          // Si no hay JID guardado, construir uno estándar
+          jid = `${normalizedPhone}@s.whatsapp.net`;
+          this.logger.debug(`[sendImage] No saved JID found, using standard format: ${jid}`);
+        }
+      } catch (error) {
+        // Si hay error al buscar en BD, usar formato estándar
+        this.logger.warn(`[sendImage] Error looking up JID in database: ${error}, using standard format`);
+        jid = `${normalizedPhone}@s.whatsapp.net`;
+      }
+    }
+
+    try {
       if (!this.socket) {
         this.logger.warn('WhatsApp socket not initialized - image not sent');
         return false;
@@ -1424,7 +1474,7 @@ export class WhatsAppService implements OnModuleInit {
 
       // Check connection state before attempting to send
       if (this.connectionState !== 'connected') {
-        this.logger.warn(`WhatsApp not connected (state: ${this.connectionState}) - image not sent to ${normalizedPhone}`);
+        this.logger.warn(`WhatsApp not connected (state: ${this.connectionState}) - image not sent to ${jid}`);
         return false;
       }
 
@@ -1434,12 +1484,10 @@ export class WhatsAppService implements OnModuleInit {
       }
 
       // Verify this is not a group
-      if (normalizedPhone.includes('@g.us')) {
-        this.logger.warn(`Cannot send image to group: ${normalizedPhone}`);
+      if (jid.includes('@g.us')) {
+        this.logger.warn(`Cannot send image to group: ${jid}`);
         return false;
       }
-
-      const jid = `${normalizedPhone}@s.whatsapp.net`;
 
       // Convert URL to local path if it's a local upload
       let imagePath = imageUrl;
@@ -1480,7 +1528,9 @@ export class WhatsAppService implements OnModuleInit {
         });
       }
 
-      this.logger.log(`Image sent to ${normalizedPhone}`);
+      // Extraer el número o identificador para logging
+      const phoneForLogging = jid.includes('@') ? jid.split('@')[0] : jid;
+      this.logger.log(`Image sent to ${jid}`);
       return true;
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
@@ -1490,11 +1540,11 @@ export class WhatsAppService implements OnModuleInit {
         errorMessage.includes('Connection closed') ||
         errorMessage.includes('Stream Errored') ||
         errorMessage.includes('xml-not-well-formed')) {
-        this.logger.warn(`Connection error while sending image to ${normalizedPhone}: ${errorMessage}`);
+        this.logger.warn(`Connection error while sending image to ${jid}: ${errorMessage}`);
         this.connectionState = 'disconnected';
         // Don't log as error, just warn - connection will be retried automatically
       } else {
-        this.logger.error(`Error sending image to ${normalizedPhone}:`, error);
+        this.logger.error(`Error sending image to ${jid}:`, error);
       }
       return false;
     }
