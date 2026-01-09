@@ -870,11 +870,17 @@ export class WhatsAppService implements OnModuleInit {
 
         // Determine sender type
         let sender: 'user' | 'bot' | 'agent' = 'user';
+        let shouldSwitchToHuman = false; // Flag para cambiar a modo HUMAN cuando el dueño responde
         if (isFromMe) {
           // Message sent from our device - determine if it's from bot or agent
-          // Check conversation mode to determine sender
+          // Si la conversación está en modo BOT y el dueño responde directamente desde WhatsApp Business,
+          // esto significa que el dueño está tomando el control, así que cambiar a modo HUMAN
           if (conversation.mode === 'BOT') {
-            sender = 'bot';
+            // El dueño del número está respondiendo directamente desde WhatsApp Business
+            // Cambiar a modo HUMAN para desactivar el bot
+            sender = 'agent'; // Marcar como agente (dueño del número)
+            shouldSwitchToHuman = true; // Marcar para cambiar el modo
+            this.logger.log(`[handleIncomingMessage] Dueño del número respondió desde WhatsApp Business - Cambiando modo de BOT a HUMAN`);
           } else {
             sender = 'agent';
           }
@@ -970,7 +976,8 @@ export class WhatsAppService implements OnModuleInit {
             lastMessage: messageContent,
             updatedAt: new Date(),
             // If agent sends message, switch to HUMAN mode
-            ...(sender === 'agent' && { mode: 'HUMAN' }),
+            // También cambiar a HUMAN cuando el dueño responde directamente desde WhatsApp Business
+            ...((sender === 'agent' || shouldSwitchToHuman) && { mode: 'HUMAN' }),
           },
           include: {
             user: true,
