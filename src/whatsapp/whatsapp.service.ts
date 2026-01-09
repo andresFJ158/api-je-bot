@@ -421,10 +421,23 @@ export class WhatsAppService implements OnModuleInit {
         await this.handleIncomingMessage(m);
       });
 
-      // Listen for contacts.upsert to get real phone numbers for LIDs
+      // ═══════════════════════════════════════════════════════════════════
+      // ⚠️ CRÍTICO: Listen for contacts.upsert to get real phone numbers for LIDs
+      // Este es el ÚNICO evento donde WhatsApp envía el número real relacionado con el LID
+      // Sin este listener, phone siempre será null
+      // ═══════════════════════════════════════════════════════════════════
+      this.logger.log('═══════════════════════════════════════════════════════════════════');
+      this.logger.log('📞 REGISTERING contacts.upsert LISTENER');
+      this.logger.log('⚠️  THIS IS CRITICAL: This is the ONLY event where WhatsApp sends real phone numbers');
+      this.logger.log('═══════════════════════════════════════════════════════════════════');
+      
       this.socket.ev.on('contacts.upsert', async (contacts) => {
+        this.logger.log('🔔🔔🔔 contacts.upsert EVENT RECEIVED! Processing contacts...');
         await this.handleContactsUpsert(contacts);
       });
+      
+      this.logger.log('✅✅✅ contacts.upsert listener registered successfully');
+      this.logger.log('═══════════════════════════════════════════════════════════════════');
 
       // Listen for connection to sync existing conversations
       this.socket.ev.on('connection.update', async (update) => {
@@ -1285,7 +1298,13 @@ export class WhatsAppService implements OnModuleInit {
    * 2️⃣ Evento posterior contacts.upsert: { id: "5917XXXXXXXX@s.whatsapp.net", lid: "168788003663937@lid" }
    */
   private async handleContactsUpsert(contacts: any[]): Promise<void> {
+    // Log crítico para confirmar que el método se está ejecutando
+    this.logger.log('═══════════════════════════════════════════════════════════════════');
+    this.logger.log('🔔 handleContactsUpsert CALLED - This is where real phone numbers arrive!');
+    this.logger.log('═══════════════════════════════════════════════════════════════════');
+    
     if (!contacts || contacts.length === 0) {
+      this.logger.warn('[handleContactsUpsert] ⚠️ No contacts received or empty array');
       return;
     }
 
