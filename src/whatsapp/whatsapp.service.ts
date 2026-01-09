@@ -421,6 +421,11 @@ export class WhatsAppService implements OnModuleInit {
         await this.handleIncomingMessage(m);
       });
 
+      // Listen for contacts.upsert to get real phone numbers for LIDs
+      this.socket.ev.on('contacts.upsert', async (contacts) => {
+        await this.handleContactsUpsert(contacts);
+      });
+
       // Listen for connection to sync existing conversations
       this.socket.ev.on('connection.update', async (update) => {
         if (update.connection === 'open' && this.socket) {
@@ -1266,6 +1271,167 @@ export class WhatsAppService implements OnModuleInit {
         this.logger.debug(`Message saved: ${isFromMe ? 'sent' : 'received'} from ${phone}, sender: ${sender}`);
       } catch (error) {
         this.logger.error('Error handling message:', error);
+      }
+    }
+  }
+
+  /**
+   * Maneja el evento contacts.upsert de Baileys
+   * Este evento se dispara cuando WhatsApp revela información de contactos,
+   * incluyendo la relación entre LID (@lid) y número real (@s.whatsapp.net)
+   */
+  private async handleContactsUpsert(contacts: any[]): Promise<void> {
+    if (!contacts || contacts.length === 0) {
+      return;
+    }
+
+    this.logger.debug(`[handleContactsUpsert] Processing ${contacts.length} contact(s)`);
+
+    for (const contact of contacts) {
+      try {
+        // El contacto puede tener:
+        // - id: "5491123456789@s.whatsapp.net" (número real)
+        // - lid: "168788003663937@lid" (Linked ID)
+        const contactId = contact.id;
+        const contactLid = contact.lid;
+
+        if (!contactId) {
+          continue;
+        }
+
+        // Verificar si el contacto tiene un número real (@s.whatsapp.net)
+        if (contactId.endsWith('@s.whatsapp.net')) {
+          const realPhone = normalizePhoneNumber(contactId);
+          
+          if (!realPhone || realPhone.length < 8) {
+            this.logger.debug(`[handleContactsUpsert] Skipping contact - invalid phone: ${contactId}`);
+            continue;
+          }
+
+          this.logger.log(`[handleContactsUpsert] ✅ Found contact with real phone: ${realPhone} (JID: ${contactId})`);
+
+          // Si también tiene LID, buscar usuarios con ese LID y actualizarlos
+          if (contactLid && contactLid.endsWith('@lid')) {
+            this.logger.log(`[handleContactsUpsert] Contact also has LID: ${contactLid}, searching for users with this LID...`);
+
+            // Buscar usuarios que tengan este LID en whatsappJid
+            const usersWithLid = await this.prisma.user.findMany({
+              where: {
+                whatsappJid: contactLid,
+              },
+            });
+
+            if (usersWithLid.length > 0) {
+              this.logger.log(`[handleContactsUpsert] Found ${usersWithLid.length} user(s) with LID ${contactLid}, updating with real phone: ${realPhone}`);
+
+              // Actualizar cada usuario encontrado
+              for (const user of usersWithLid) {
+                const updateData: any = {
+                  phone: realPhone,
+                  whatsappJid: contactId, // Actualizar también el JID al real
+                };
+
+                // Actualizar el nombre si no tiene uno establecido o es un placeholder
+                const defaultName = 'Contacto sin número';
+                const hasDefaultName = !user.name ||
+                  user.name === defaultName ||
+                  user.name === user.phone ||
+                  user.name.startsWith('Contacto sin');
+
+                if (hasDefaultName && contact.notify) {
+                  updateData.name = contact.notify.trim();
+                  this.logger.log(`[handleContactsUpsert] Also updating name to: ${updateData.name}`);
+                }
+
+                await this.prisma.user.update({
+                  where: { id: user.id },
+                  data: updateData,
+                });
+
+                this.logger.log(`[handleContactsUpsert] ✅ Updated user ${user.id}: phone ${user.phone || 'null'} -> ${realPhone}, JID ${user.whatsappJid} -> ${contactId}`);
+              }
+            } else {
+              this.logger.debug(`[handleContactsUpsert] No users found with LID ${contactLid}`);
+            }
+          }
+
+          // También buscar usuarios que tengan este número pero sin JID o con JID diferente
+          // Esto ayuda a actualizar usuarios que fueron creados sin JID
+          const usersWithPhone = await this.prisma.user.findMany({
+            where: {
+              phone: realPhone,
+              OR: [
+                { whatsappJid: null },
+                { whatsappJid: { not: contactId } },
+              ],
+            },
+          });
+
+          if (usersWithPhone.length > 0) {
+            this.logger.log(`[handleContactsUpsert] Found ${usersWithPhone.length} user(s) with phone ${realPhone} but different/missing JID, updating JID to: ${contactId}`);
+
+            for (const user of usersWithPhone) {
+              await this.prisma.user.update({
+                where: { id: user.id },
+                data: {
+                  whatsappJid: contactId,
+                },
+              });
+
+              this.logger.log(`[handleContactsUpsert] ✅ Updated user ${user.id} JID: ${user.whatsappJid || 'null'} -> ${contactId}`);
+            }
+          }
+
+          // Si el contacto no tiene LID pero tiene número real, buscar usuarios sin phone pero con este JID
+          if (!contactLid) {
+            const usersWithJid = await this.prisma.user.findMany({
+              where: {
+                whatsappJid: contactId,
+                phone: null,
+              },
+            });
+
+            if (usersWithJid.length > 0) {
+              this.logger.log(`[handleContactsUpsert] Found ${usersWithJid.length} user(s) with JID ${contactId} but no phone, updating with phone: ${realPhone}`);
+
+              for (const user of usersWithJid) {
+                await this.prisma.user.update({
+                  where: { id: user.id },
+                  data: {
+                    phone: realPhone,
+                  },
+                });
+
+                this.logger.log(`[handleContactsUpsert] ✅ Updated user ${user.id} phone: null -> ${realPhone}`);
+              }
+            }
+          }
+        } else if (contactId.endsWith('@lid')) {
+          // Si solo tenemos el LID (sin número real aún), guardar el LID si no existe
+          this.logger.debug(`[handleContactsUpsert] Contact has only LID (no real phone yet): ${contactId}`);
+          
+          // Buscar si hay usuarios con este LID
+          const existingUser = await this.prisma.user.findFirst({
+            where: {
+              whatsappJid: contactId,
+            },
+          });
+
+          if (!existingUser) {
+            // Crear un usuario temporal con el LID (se actualizará cuando llegue el número real)
+            const contactName = contact.notify || contact.name || 'Contacto sin número';
+            await this.prisma.user.create({
+              data: {
+                phone: null,
+                name: contactName,
+                whatsappJid: contactId,
+              },
+            });
+            this.logger.log(`[handleContactsUpsert] Created temporary user with LID: ${contactId} (will be updated when real phone is available)`);
+          }
+        }
+      } catch (error) {
+        this.logger.error(`[handleContactsUpsert] Error processing contact:`, error);
       }
     }
   }
