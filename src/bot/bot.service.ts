@@ -233,16 +233,102 @@ export class BotService {
         } as any,
       });
     } else {
-      config = await this.prisma.botConfig.update({
-        where: { id: config.id },
-        data: {
-          ...data,
-          // Only update fields that are provided
-        },
+      // Separate existing fields from new message fields
+      const existingFields: any = {
+        systemPrompt: data.systemPrompt,
+        temperature: data.temperature,
+        maxTokens: data.maxTokens,
+        model: data.model,
+        contextMessages: data.contextMessages,
+        classificationCategories: data.classificationCategories,
+        orderInstructions: data.orderInstructions,
+        locationInstructions: data.locationInstructions,
+        locationKeywords: data.locationKeywords,
+        autoCreateOrderOnPaymentRequest: data.autoCreateOrderOnPaymentRequest,
+        autoSendQRImages: data.autoSendQRImages,
+        notifyOrderStatusChanges: data.notifyOrderStatusChanges,
+        findNearestBranchOnLocationShare: data.findNearestBranchOnLocationShare,
+        showLocationInstructions: data.showLocationInstructions,
+        prepareOrderInsteadOfCreate: data.prepareOrderInsteadOfCreate,
+        extractOrderFromContext: data.extractOrderFromContext,
+      };
+
+      // Remove undefined values
+      Object.keys(existingFields).forEach(key => {
+        if (existingFields[key] === undefined) {
+          delete existingFields[key];
+        }
       });
+
+      // New message fields (may not exist in DB yet)
+      const newMessageFields: any = {
+        orderSuccessMessage: data.orderSuccessMessage,
+        orderErrorMessage: data.orderErrorMessage,
+        orderNotFoundMessage: data.orderNotFoundMessage,
+        orderPrepareErrorMessage: data.orderPrepareErrorMessage,
+        paymentMethodsMessage: data.paymentMethodsMessage,
+        paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage,
+        locationDefaultMessage: data.locationDefaultMessage,
+        nearestBranchMessage: data.nearestBranchMessage,
+        generalErrorMessage: data.generalErrorMessage,
+        branchNotFoundMessage: data.branchNotFoundMessage,
+        productsRequiredMessage: data.productsRequiredMessage,
+        paymentConfirmationMessage: data.paymentConfirmationMessage,
+      };
+
+      // Remove undefined values
+      Object.keys(newMessageFields).forEach(key => {
+        if (newMessageFields[key] === undefined) {
+          delete newMessageFields[key];
+        }
+      });
+
+      try {
+        // Try to update with all fields first
+        config = await this.prisma.botConfig.update({
+          where: { id: config.id },
+          data: {
+            ...existingFields,
+            ...newMessageFields,
+          } as any,
+        });
+      } catch (error: any) {
+        // If error is due to missing columns, update only existing fields
+        if (error.code === '42703' || error.message?.includes('column') || error.message?.includes('does not exist')) {
+          this.logger.warn('New message columns may not exist in database yet. Updating only existing fields...');
+          config = await this.prisma.botConfig.update({
+            where: { id: config.id },
+            data: existingFields,
+          });
+          // Log that new fields were skipped
+          if (Object.keys(newMessageFields).length > 0) {
+            this.logger.warn(`Skipped updating new message fields (columns don't exist yet): ${Object.keys(newMessageFields).join(', ')}`);
+            this.logger.warn('Please run: npx prisma migrate dev --name add_bot_config_messages');
+          }
+        } else {
+          throw error;
+        }
+      }
     }
 
-    return config;
+    // Ensure all new message fields are present in response (set to null if they don't exist in DB)
+    const configWithDefaults = {
+      ...config,
+      orderSuccessMessage: (config as any).orderSuccessMessage || null,
+      orderErrorMessage: (config as any).orderErrorMessage || null,
+      orderNotFoundMessage: (config as any).orderNotFoundMessage || null,
+      orderPrepareErrorMessage: (config as any).orderPrepareErrorMessage || null,
+      paymentMethodsMessage: (config as any).paymentMethodsMessage || null,
+      paymentMethodsNotFoundMessage: (config as any).paymentMethodsNotFoundMessage || null,
+      locationDefaultMessage: (config as any).locationDefaultMessage || null,
+      nearestBranchMessage: (config as any).nearestBranchMessage || null,
+      generalErrorMessage: (config as any).generalErrorMessage || null,
+      branchNotFoundMessage: (config as any).branchNotFoundMessage || null,
+      productsRequiredMessage: (config as any).productsRequiredMessage || null,
+      paymentConfirmationMessage: (config as any).paymentConfirmationMessage || null,
+    };
+
+    return configWithDefaults;
   }
 
   async generateResponse(conversationId: string, userMessage: string): Promise<string | null> {
