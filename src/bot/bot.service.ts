@@ -21,10 +21,10 @@ export class BotService {
     this.logger.debug(`[BotService] API Key presente: ${!!apiKey}`);
     this.logger.debug(`[BotService] Usando DEEPSEEK_API_KEY: ${!!process.env.DEEPSEEK_API_KEY}`);
     this.logger.debug(`[BotService] Usando OPENAI_API_KEY: ${!!process.env.OPENAI_API_KEY}`);
-    
+
     if (apiKey) {
       // Mostrar primeros y últimos caracteres de la API key para debugging (sin exponerla completa)
-      const maskedKey = apiKey.length > 8 
+      const maskedKey = apiKey.length > 8
         ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`
         : '****';
       this.logger.debug(`[BotService] API Key (parcial): ${maskedKey} (longitud: ${apiKey.length})`);
@@ -32,12 +32,12 @@ export class BotService {
       this.logger.error(`[BotService] ADVERTENCIA: No se encontró DEEPSEEK_API_KEY ni OPENAI_API_KEY en variables de entorno`);
       this.logger.error(`[BotService] Por favor, configura DEEPSEEK_API_KEY en el archivo .env del backend`);
     }
-    
+
     this.openai = new OpenAI({
       apiKey: apiKey,
       baseURL: 'https://api.deepseek.com',
     });
-    
+
     this.logger.debug(`[BotService] Cliente de IA inicializado con baseURL: ${this.openai.baseURL}`);
   }
 
@@ -58,7 +58,31 @@ export class BotService {
             contextMessages: 5,
             classificationCategories: ['ventas', 'soporte', 'facturacion', 'otros'],
             orderInstructions: 'REGLAS CRÍTICAS PARA PEDIDOS:\n\n1. NUNCA vendas ni confirmes pagos. Tu función es solo REGISTRAR información de pedidos.\n2. Cuando el usuario quiera hacer un pedido (pedido, comprar, quiero, necesito productos):\n   - Usa prepare_order para RECOPILAR información: productos, cantidades, sucursal\n   - Proporciona cotizaciones y precios\n   - Muestra métodos de pago disponibles si el usuario pregunta\n   - NUNCA crees el pedido directamente\n   - NUNCA confirmes que el pago fue recibido\n3. Después de recopilar toda la información del pedido, informa al usuario que un agente humano se encargará de procesar el pedido y confirmar el pago.\n4. Formato para pedidos: Lista productos como "product_name:quantity" (ej: "Producto A:2, Producto B:1")\n\nRECUERDA: Solo REGISTRAS y COTIZAS. NO vendes ni confirmas pagos.',
-            locationInstructions: 'IMPORTANT: When user asks about nearest branch or location, if they haven\'t shared their location (Google Maps link), provide step-by-step instructions to share location in WhatsApp.',
+            locationInstructions: `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
+
+**¿Cómo compartir tu ubicación desde Google Maps?**
+1.  Abre la aplicación **Google Maps** en tu teléfono.
+2.  Mantén presionado el **punto azul** que muestra tu ubicación actual.
+3.  Selecciona la opción **"Compartir ubicación"**.
+4.  Elige la duración (por ejemplo, 15 minutos).
+5.  Copia el enlace generado y **pégalo aquí en el chat**.
+
+**¿Cómo compartir tu ubicación directamente en WhatsApp?**
+1.  En nuestro chat de WhatsApp, toca el clip 📎.
+2.  Selecciona **"Ubicación"**.
+3.  Elige **"Compartir ubicación en tiempo real"**.
+4.  Selecciona la duración y envíala.
+
+**Una vez que comparta su ubicación, podré:**
+*   Indicarte cuál de nuestras sucursales en Santa Cruz te queda más cerca.
+*   Darte la dirección exacta, teléfono y horarios.
+*   Calcular la mejor ruta para llegar.
+
+**Nuestras sucursales en Santa Cruz son:**
+*   **Kokun Remanso:** Av. El Remanso. Horario: 09:00-21:00 todos los días.
+*   **Oficina Santa Cruz:** Esquina Sucre & Cobija. Horario: L-V 08:00-12:00 y 14:30-18:30, Sáb 08:00-13:00.
+
+¿En qué más puedo ayudarte?`,
             locationKeywords: 'ubicación|sucursal|tienda|local|dónde|más cercan|más próxim|necesito.*sucursal|busco.*sucursal',
             autoCreateOrderOnPaymentRequest: false,
             autoSendQRImages: true,
@@ -103,7 +127,7 @@ export class BotService {
   }) {
     let config = await this.prisma.botConfig.findFirst();
 
-      if (!config) {
+    if (!config) {
       config = await this.prisma.botConfig.create({
         data: {
           systemPrompt: data.systemPrompt || 'Eres un Asistente Virtual (Chatbot) que actúa como punto de entrada del cliente. Tu función es: CLASIFICAR las consultas de los usuarios, COTIZAR productos y precios, y REGISTRAR información (pedidos, contactos, etc.). IMPORTANTE: NUNCA vendas ni confirmes pagos. Solo proporciona información, cotizaciones y registra datos. Las ventas y confirmaciones de pago deben ser manejadas por agentes humanos.',
@@ -404,26 +428,26 @@ export class BotService {
 
       this.logger.debug(`[generateResponse] Procesando respuesta de API...`);
       this.logger.debug(`[generateResponse] Choices recibidos: ${completion.choices?.length || 0}`);
-      
+
       let response = completion.choices[0]?.message?.content?.trim() || null;
       const functionCall = completion.choices[0]?.message?.function_call;
-      
+
       this.logger.debug(`[generateResponse] Response content: ${response ? `${response.substring(0, 100)}...` : 'null'}`);
       this.logger.debug(`[generateResponse] Function call: ${functionCall ? `${functionCall.name}` : 'none'}`);
 
       // Check if user is asking for payment methods (just asking, not confirming)
       const paymentMethodKeywords = /(método|metodo|forma|como|dónde|donde).*(pago|pagar|transferencia|transferir|qr|cuenta|bancaria|banco)/i;
       const isAskingForPayment = paymentMethodKeywords.test(userMessage);
-      
+
       // Check if user is confirming/selecting a payment method (not just asking)
       const paymentConfirmationKeywords = /(pagaré|pagare|pagar|usaré|usare|usar|elegí|elige|elijo|confirmo|listo|ok|okay|sí|si|yes|con este|este método|método \d+|opción \d+|número \d+)/i;
-      const isConfirmingPayment = paymentConfirmationKeywords.test(userMessage) && 
+      const isConfirmingPayment = paymentConfirmationKeywords.test(userMessage) &&
         (userMessage.includes('qr') || userMessage.includes('transferencia') || userMessage.includes('método') || userMessage.includes('pago') || /(\d+|uno|dos|tres|primero|segundo|tercero)/i.test(userMessage));
-      
+
       // If user is just asking for payment methods, show them (don't create order yet)
       if (isAskingForPayment && !isConfirmingPayment) {
         this.logger.debug(`[generateResponse] Usuario pregunta por métodos de pago (solo consulta)`);
-        
+
         // Just show payment methods without creating order
         const paymentMethods = await this.prisma.paymentMethod.findMany({
           where: { isActive: true },
@@ -432,7 +456,7 @@ export class BotService {
 
         if (paymentMethods.length > 0) {
           response = `💳 Métodos de Pago Disponibles:\n\n`;
-          
+
           const qrMethods = paymentMethods.filter(pm => pm.type === 'QR');
           const bankMethods = paymentMethods.filter(pm => pm.type === 'BANK_ACCOUNT');
 
@@ -459,31 +483,31 @@ export class BotService {
             });
             response += `\n`;
           }
-          
+
           response += `Por favor, confirma con qué método deseas pagar para proceder con tu pedido. 😊`;
         } else {
           response = `No hay métodos de pago configurados en este momento. Por favor, contacta con un agente para más información.`;
         }
       }
-      
+
       // If user is confirming payment method, create the order
       if (isConfirmingPayment && config.autoCreateOrderOnPaymentRequest) {
         this.logger.debug(`[generateResponse] Usuario confirma método de pago, creando pedido...`);
-        
+
         // Try to extract order information from recent context
         const recentMessages = conversation.messages.slice(0, 10).reverse();
-        
+
         // Extract order info from context
-        const extractedOrder = config.extractOrderFromContext 
+        const extractedOrder = config.extractOrderFromContext
           ? await this.extractOrderFromContext(recentMessages)
           : null;
-        
+
         if (extractedOrder) {
           this.logger.debug(`[generateResponse] Información de pedido encontrada en contexto, creando pedido...`);
           this.logger.debug(`[generateResponse] Orden extraída: ${JSON.stringify(extractedOrder)}`);
-          
+
           const orderResult = await this.handleCreateOrder(conversation.user.id, extractedOrder);
-          
+
           if (orderResult.success) {
             // Get active payment methods
             const paymentMethods = await this.prisma.paymentMethod.findMany({
@@ -501,7 +525,7 @@ export class BotService {
             // Add payment methods information
             if (paymentMethods.length > 0) {
               response += `💳 Métodos de Pago Disponibles:\n\n`;
-              
+
               const qrMethods = paymentMethods.filter(pm => pm.type === 'QR');
               const bankMethods = paymentMethods.filter(pm => pm.type === 'BANK_ACCOUNT');
 
@@ -567,7 +591,7 @@ export class BotService {
             // Add payment methods information
             if (paymentMethods.length > 0) {
               response += `💳 Métodos de Pago Disponibles:\n\n`;
-              
+
               const qrMethods = paymentMethods.filter(pm => pm.type === 'QR');
               const bankMethods = paymentMethods.filter(pm => pm.type === 'BANK_ACCOUNT');
 
@@ -610,16 +634,16 @@ export class BotService {
       if (functionCall && functionCall.name === 'prepare_order' && config.prepareOrderInsteadOfCreate) {
         try {
           const args = JSON.parse(functionCall.arguments);
-          
+
           // Check what information we have
           const hasItems = args.items && args.items.length > 0;
           const hasBranch = args.branchName && args.branchName.trim() !== '';
-          
+
           // Calculate total to show user
           const allProducts = await this.prisma.product.findMany();
           let total = 0;
           const itemsSummary = [];
-          
+
           if (hasItems) {
             for (const item of args.items || []) {
               const product = allProducts.find(
@@ -627,7 +651,7 @@ export class BotService {
                   p.name.toLowerCase().includes(item.productName.toLowerCase()) ||
                   item.productName.toLowerCase().includes(p.name.toLowerCase())
               );
-              
+
               if (product) {
                 const itemTotal = product.price * item.quantity;
                 total += itemTotal;
@@ -640,7 +664,7 @@ export class BotService {
           if (hasItems && !hasBranch) {
             const branches = await this.branchesService.findAll(true);
             const branchList = branches.map((b, idx) => `${idx + 1}. ${b.name}`).join('\n');
-            
+
             response = `📦 Productos agregados:\n${itemsSummary.map((item, idx) => `${idx + 1}. ${item}`).join('\n')}\n\n` +
               `💰 Subtotal: Bs.${total.toFixed(2)}\n\n` +
               `🏢 Ahora necesito saber en qué sucursal deseas recibir tu pedido:\n\n${branchList}\n\n` +
@@ -655,7 +679,7 @@ export class BotService {
                 b.name.toLowerCase().includes(args.branchName.toLowerCase()) ||
                 args.branchName.toLowerCase().includes(b.name.toLowerCase())
             );
-            
+
             if (!branch) {
               response = `❌ No encontré la sucursal "${args.branchName}". Por favor, verifica el nombre e intenta de nuevo.`;
             } else {
@@ -670,7 +694,7 @@ export class BotService {
           else {
             response = `Por favor, indica los productos que deseas ordenar.`;
           }
-          
+
           // Store order info in response metadata for later use
           (response as any).preparedOrder = args;
         } catch (error) {
@@ -686,26 +710,75 @@ export class BotService {
       const googleMapsUrlPattern = /(https?:\/\/)?(www\.)?(maps\.(google\.com|app\.goo\.gl)|google\.com\/maps|goo\.gl\/maps)[^\s]*/gi;
       const mapsMatch = userMessage.match(googleMapsUrlPattern);
 
-      // If user asks about location but hasn't shared it, provide instructions from config
-      if (isLocationQuery && !mapsMatch && response && config.showLocationInstructions && config.locationInstructions) {
-        // Extract the instruction part from config (remove the IMPORTANT prefix if present)
-        let locationInstructionsText = config.locationInstructions;
-        if (locationInstructionsText.includes('IMPORTANT:')) {
-          locationInstructionsText = locationInstructionsText.split('IMPORTANT:')[1].trim();
-        }
-        
-        // If config has custom instructions, use them, otherwise use default
-        if (locationInstructionsText && !locationInstructionsText.includes('provide step-by-step')) {
-          response = response + `\n\n${locationInstructionsText}`;
+      // If user asks about location but hasn't shared it, replace response with instructions from config
+      if (isLocationQuery && !mapsMatch && config.showLocationInstructions) {
+        // If config has custom location instructions, use them completely (replace the response)
+        if (config.locationInstructions && config.locationInstructions.trim()) {
+          // Extract the instruction part from config (remove the IMPORTANT prefix if present)
+          let locationInstructionsText = config.locationInstructions;
+          if (locationInstructionsText.includes('IMPORTANT:')) {
+            locationInstructionsText = locationInstructionsText.split('IMPORTANT:')[1].trim();
+          }
+
+          // Remove any "provide step-by-step" instructions as they are replaced by the actual message
+          if (locationInstructionsText && !locationInstructionsText.includes('provide step-by-step')) {
+            // Replace the entire response with the configured location instructions
+            response = locationInstructionsText;
+          } else {
+            // If config only has the default instruction format, use default message
+            response = `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
+
+**¿Cómo compartir tu ubicación desde Google Maps?**
+1.  Abre la aplicación **Google Maps** en tu teléfono.
+2.  Mantén presionado el **punto azul** que muestra tu ubicación actual.
+3.  Selecciona la opción **"Compartir ubicación"**.
+4.  Elige la duración (por ejemplo, 15 minutos).
+5.  Copia el enlace generado y **pégalo aquí en el chat**.
+
+**¿Cómo compartir tu ubicación directamente en WhatsApp?**
+1.  En nuestro chat de WhatsApp, toca el clip 📎.
+2.  Selecciona **"Ubicación"**.
+3.  Elige **"Compartir ubicación en tiempo real"**.
+4.  Selecciona la duración y envíala.
+
+**Una vez que comparta su ubicación, podré:**
+*   Indicarte cuál de nuestras sucursales en Santa Cruz te queda más cerca.
+*   Darte la dirección exacta, teléfono y horarios.
+*   Calcular la mejor ruta para llegar.
+
+**Nuestras sucursales en Santa Cruz son:**
+*   **Kokun Remanso:** Av. El Remanso. Horario: 09:00-21:00 todos los días.
+*   **Oficina Santa Cruz:** Esquina Sucre & Cobija. Horario: L-V 08:00-12:00 y 14:30-18:30, Sáb 08:00-13:00.
+
+¿En qué más puedo ayudarte?`;
+          }
         } else {
-          // Default instructions
-          const defaultLocationInstructions = `\n\n📍 Para encontrar la sucursal más cercana a tu ubicación, necesito que compartas tu ubicación. Sigue estos pasos:\n\n` +
-            `1️⃣ Abre Google Maps en tu teléfono\n` +
-            `2️⃣ Toca el botón de "Compartir ubicación" o busca tu ubicación actual\n` +
-            `3️⃣ Toca "Compartir" y selecciona "Copiar enlace"\n` +
-            `4️⃣ Pega el enlace aquí en el chat\n\n` +
-            `Una vez que compartas tu ubicación, te mostraré la sucursal más cercana con la distancia y toda la información que necesites. 😊`;
-          response = response + defaultLocationInstructions;
+          // Default instructions if no custom instructions are configured
+          response = `Para mostrarte la **ubicación más cercana** a ti, necesito que compartas tu ubicación en tiempo real.
+
+**¿Cómo compartir tu ubicación desde Google Maps?**
+1.  Abre la aplicación **Google Maps** en tu teléfono.
+2.  Mantén presionado el **punto azul** que muestra tu ubicación actual.
+3.  Selecciona la opción **"Compartir ubicación"**.
+4.  Elige la duración (por ejemplo, 15 minutos).
+5.  Copia el enlace generado y **pégalo aquí en el chat**.
+
+**¿Cómo compartir tu ubicación directamente en WhatsApp?**
+1.  En nuestro chat de WhatsApp, toca el clip 📎.
+2.  Selecciona **"Ubicación"**.
+3.  Elige **"Compartir ubicación en tiempo real"**.
+4.  Selecciona la duración y envíala.
+
+**Una vez que comparta su ubicación, podré:**
+*   Indicarte cuál de nuestras sucursales en Santa Cruz te queda más cerca.
+*   Darte la dirección exacta, teléfono y horarios.
+*   Calcular la mejor ruta para llegar.
+
+**Nuestras sucursales en Santa Cruz son:**
+*   **Kokun Remanso:** Av. El Remanso. Horario: 09:00-21:00 todos los días.
+*   **Oficina Santa Cruz:** Esquina Sucre & Cobija. Horario: L-V 08:00-12:00 y 14:30-18:30, Sáb 08:00-13:00.
+
+¿En qué más puedo ayudarte?`;
         }
       }
 
@@ -752,13 +825,13 @@ export class BotService {
       this.logger.error(`[generateResponse] Error code: ${error?.code || 'N/A'}`);
       this.logger.error(`[generateResponse] Error status: ${error?.status || 'N/A'}`);
       this.logger.error(`[generateResponse] Error response: ${JSON.stringify(error?.response || error?.error || 'N/A', null, 2)}`);
-      
+
       // Log adicional para errores de API
       if (error?.response) {
         this.logger.error(`[generateResponse] API Error Response Status: ${error.response.status}`);
         this.logger.error(`[generateResponse] API Error Response Data: ${JSON.stringify(error.response.data, null, 2)}`);
       }
-      
+
       console.error('Error generating bot response:', error);
       return 'Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo.';
     }
@@ -929,59 +1002,59 @@ export class BotService {
   private async extractOrderFromContext(messages: any[]): Promise<any | null> {
     try {
       this.logger.debug(`[extractOrderFromContext] Buscando información de pedido en ${messages.length} mensajes`);
-      
+
       // Look for the most recent prepare_order function call result in assistant messages
       // We want the message that has BOTH products AND branch (the final summary)
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
-        
+
         // Check if this is an assistant message that contains order summary
         if (msg.sender === 'assistant' && msg.content) {
           this.logger.debug(`[extractOrderFromContext] Revisando mensaje del asistente: ${msg.content.substring(0, 100)}...`);
-          
+
           // Look for order summary pattern: "Resumen de tu pedido" - this is the final summary with both products and branch
           if (msg.content.includes('Resumen de tu pedido')) {
             this.logger.debug(`[extractOrderFromContext] Mensaje contiene resumen completo de pedido`);
-            
+
             // Try to extract branch name
             const branchMatch = msg.content.match(/Sucursal:\s*([^\n]+)/i);
             if (!branchMatch) {
               this.logger.debug(`[extractOrderFromContext] No se encontró nombre de sucursal en resumen`);
               continue;
             }
-            
+
             const branchName = branchMatch[1].trim();
             this.logger.debug(`[extractOrderFromContext] Sucursal encontrada: ${branchName}`);
-            
+
             // Try multiple patterns to extract items
             // Pattern 1: "1. Producto x2 (Bs.10.00)" or "Producto x2 (Bs.10.00)"
             let itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^(]+?)\s*x(\d+)\s*\(/gm);
-            
+
             // Pattern 2: "1. Producto x2" or "Producto x2" (without price)
             if (!itemsMatches || itemsMatches.length === 0) {
               itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^x\n]+?)\s*x(\d+)/gm);
             }
-            
+
             // Pattern 3: Just look for "x" followed by number (more flexible)
             if (!itemsMatches || itemsMatches.length === 0) {
               itemsMatches = msg.content.match(/([^\n\d]+?)\s*x(\d+)/g);
             }
-            
+
             if (!itemsMatches || itemsMatches.length === 0) {
               this.logger.debug(`[extractOrderFromContext] No se encontraron items en el mensaje`);
               continue;
             }
-            
+
             this.logger.debug(`[extractOrderFromContext] Encontrados ${itemsMatches.length} items potenciales`);
-            
+
             const items = [];
             const allProducts = await this.prisma.product.findMany();
-            
+
             for (const itemMatch of itemsMatches) {
               // Try to extract product name and quantity
               let productName = '';
               let quantity = 0;
-              
+
               // Pattern 1: "1. Producto x2 (Bs.10.00)"
               const pattern1 = itemMatch.match(/\d+\.\s*([^(]+?)\s*x(\d+)\s*\(/);
               if (pattern1) {
@@ -995,10 +1068,10 @@ export class BotService {
                   quantity = parseInt(pattern2[2].trim());
                 }
               }
-              
+
               if (productName && quantity > 0) {
                 this.logger.debug(`[extractOrderFromContext] Intentando encontrar producto: "${productName}" x${quantity}`);
-                
+
                 // Find matching product
                 const product = allProducts.find(
                   (p) => {
@@ -1009,7 +1082,7 @@ export class BotService {
                       searchName.includes(pName);
                   }
                 );
-                
+
                 if (product) {
                   this.logger.debug(`[extractOrderFromContext] Producto encontrado: ${product.name}`);
                   items.push({
@@ -1021,7 +1094,7 @@ export class BotService {
                 }
               }
             }
-            
+
             if (branchName && items.length > 0) {
               this.logger.debug(`[extractOrderFromContext] ✅ Orden extraída exitosamente: ${branchName}, ${items.length} items`);
               return {
@@ -1034,7 +1107,7 @@ export class BotService {
           }
         }
       }
-      
+
       this.logger.debug(`[extractOrderFromContext] ❌ No se encontró información de pedido en el contexto`);
       return null;
     } catch (error) {
