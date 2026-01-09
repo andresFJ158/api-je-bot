@@ -410,7 +410,8 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         // Ignore messages from groups (JID ends with @g.us)
-        const remoteJid = msg.key.remoteJid || '';
+        // Verificar que msg.key existe antes de acceder a remoteJid
+        const remoteJid = (msg.key?.remoteJid || '') as string;
 
         // Log detallado del JID para debugging
         this.logger.debug(`[handleIncomingMessage] Raw remoteJid: "${remoteJid}", Type: ${typeof remoteJid}, Length: ${remoteJid.length}`);
@@ -442,7 +443,8 @@ export class WhatsAppService implements OnModuleInit {
         }
 
         // Ignore status messages (status broadcasts)
-        if (remoteJid.includes('status')) {
+        // Verificar que remoteJid no sea null antes de usar includes
+        if (remoteJid && remoteJid.includes('status')) {
           this.logger.debug(`Ignoring status message: ${remoteJid}`);
           continue;
         }
@@ -669,7 +671,8 @@ export class WhatsAppService implements OnModuleInit {
           // Los números de teléfono internacionales raramente tienen más de 12 dígitos
           if (phone.length > 12) {
             // Si el número es muy largo y parece ser un LID (no tiene @s.whatsapp.net), rechazarlo
-            if (!remoteJid.includes('@s.whatsapp.net')) {
+            // Verificar que remoteJid no sea null antes de usar includes
+            if (!remoteJid || !remoteJid.includes('@s.whatsapp.net')) {
               this.logger.error(`[handleIncomingMessage] ERROR: Phone number too long (${phone.length} digits) and appears to be LID: ${phone}. Original JID: ${remoteJid}`);
               this.logger.error(`[handleIncomingMessage] This is likely a LID, not a real phone number. Setting phone to null.`);
               phone = null;
@@ -817,7 +820,7 @@ export class WhatsAppService implements OnModuleInit {
           }
 
           // Actualizar el JID si no existe o si es diferente (especialmente si ahora tenemos un JID real)
-          if (!user.whatsappJid || (originalJidForSending.includes('@s.whatsapp.net') && !user.whatsappJid.includes('@s.whatsapp.net'))) {
+          if (!user.whatsappJid || (originalJidForSending && originalJidForSending.includes('@s.whatsapp.net') && user.whatsappJid && !user.whatsappJid.includes('@s.whatsapp.net'))) {
             updateData.whatsappJid = originalJidForSending;
             this.logger.debug(`[handleIncomingMessage] Updated user JID from "${user.whatsappJid}" to "${originalJidForSending}"`);
           }
@@ -887,7 +890,8 @@ export class WhatsAppService implements OnModuleInit {
             });
 
             // Add tag to user if not exists
-            if (!user.tags.includes(tag)) {
+            // Verificar que user.tags no sea null antes de usar includes
+            if (!user.tags || !user.tags.includes(tag)) {
               await this.prisma.user.update({
                 where: { id: user.id },
                 data: {
@@ -1179,6 +1183,11 @@ export class WhatsAppService implements OnModuleInit {
 
   // Send typing indicator (writing/typing effect)
   async sendTypingIndicator(phone: string, isTyping: boolean = true): Promise<boolean> {
+    // Verificar que phone no sea null o undefined
+    if (!phone) {
+      return false;
+    }
+
     // Si el phone ya es un JID completo (tiene @), usarlo directamente
     let jid = '';
     if (phone.includes('@')) {
@@ -1250,6 +1259,12 @@ export class WhatsAppService implements OnModuleInit {
   }
 
   async sendMessage(phone: string, content: string, showTyping: boolean = false): Promise<boolean> {
+    // Verificar que phone no sea null o undefined
+    if (!phone) {
+      this.logger.warn(`Invalid phone number: ${phone}`);
+      return false;
+    }
+
     // Si el phone ya es un JID completo (tiene @), usarlo directamente
     let jid = '';
     if (phone.includes('@')) {
