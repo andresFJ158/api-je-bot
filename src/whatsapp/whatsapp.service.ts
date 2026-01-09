@@ -51,6 +51,7 @@ export class WhatsAppService implements OnModuleInit {
   private readonly maxMessageRetries = 3;
   private baileys: BaileysModule | null = null;
   private keepAliveInterval: NodeJS.Timeout | null = null; // Intervalo para mantener la sesión activa
+  private isInitializing = false; // Bandera para evitar múltiples inicializaciones simultáneas
 
   // Lazy load baileys module using eval to ensure truly dynamic import
   // TypeScript cannot statically analyze eval, so it won't compile to require()
@@ -110,7 +111,40 @@ export class WhatsAppService implements OnModuleInit {
   }
 
   private async initializeWhatsApp() {
+    // Evitar múltiples inicializaciones simultáneas
+    if (this.isInitializing) {
+      this.logger.debug('WhatsApp initialization already in progress, skipping...');
+      return;
+    }
+
+    // Si ya hay un socket activo y conectado, no reinicializar
+    if (this.socket && this.connectionState === 'connected') {
+      this.logger.debug('WhatsApp already connected, skipping initialization');
+      return;
+    }
+
+    this.isInitializing = true;
+
     try {
+      // Limpiar socket anterior si existe antes de crear uno nuevo
+      if (this.socket) {
+        this.logger.debug('Cleaning up previous socket before reinitializing...');
+        try {
+          this.stopKeepAlive();
+          // Remover todos los event listeners del socket anterior
+          if (this.socket.ev) {
+            this.socket.ev.removeAllListeners();
+          }
+          // Cerrar el socket si tiene un método de cierre
+          if (typeof this.socket.end === 'function') {
+            this.socket.end();
+          }
+        } catch (error) {
+          this.logger.warn('Error cleaning up previous socket:', error);
+        }
+        this.socket = null;
+      }
+
       // Usar ruta absoluta para evitar problemas
       const absoluteSessionPath = path.resolve(this.sessionPath);
 
@@ -204,9 +238,23 @@ export class WhatsAppService implements OnModuleInit {
           const errorDetails = lastDisconnect?.error as any;
           const errorMessage = errorDetails?.message || errorDetails?.toString() || 'Unknown error';
           const isXmlError = errorMessage.includes('xml-not-well-formed') || errorMessage.includes('Stream Errored');
+          
+          // Detectar error de conflicto (múltiples conexiones)
+          const isConflictError = disconnectReason === 440 || 
+                                  (errorDetails?.reasonNode?.tag === 'conflict' && 
+                                   errorDetails?.reasonNode?.attrs?.type === 'replaced');
 
           // Log error with more context
-          if (isXmlError) {
+          if (isConflictError) {
+            this.logger.warn(
+              `Connection closed due to conflict (multiple connections detected). Error: ${errorMessage}, Status: ${disconnectReason}, IsLoggedOut: ${isLoggedOut}`,
+            );
+            this.logger.warn('This usually means another instance is trying to connect. Waiting before retry...');
+            // Limpiar socket y marcar como no inicializando para permitir nueva conexión
+            this.socket = null;
+            this.isInitializing = false;
+            this.stopKeepAlive();
+          } else if (isXmlError) {
             this.logger.warn(
               `Connection closed due to XML parsing error. This is usually temporary. Error: ${errorMessage}, Status: ${disconnectReason}, IsLoggedOut: ${isLoggedOut}`,
             );
@@ -249,10 +297,25 @@ export class WhatsAppService implements OnModuleInit {
 
             if (shouldReconnect) {
               this.reconnectAttempts++;
-              // Reducir tiempos de espera para reconexión más rápida
-              // For XML errors, use longer wait time as they often indicate temporary server issues
-              const baseWaitTime = isXmlError ? 3000 : 1000; // Reducido de 5000/2000 a 3000/1000
-              const waitTime = Math.min(this.reconnectAttempts * baseWaitTime, isXmlError ? 20000 : 5000); // Reducido de 30000/10000 a 20000/5000
+              // Para errores de conflicto, esperar más tiempo antes de reconectar
+              // Para XML errors, usar tiempo de espera más largo
+              // Para otros errores, usar tiempo de espera más corto
+              let baseWaitTime: number;
+              let maxWaitTime: number;
+              
+              if (isConflictError) {
+                // Conflictos requieren más tiempo para que la otra conexión termine
+                baseWaitTime = 10000; // 10 segundos base
+                maxWaitTime = 30000; // Máximo 30 segundos
+              } else if (isXmlError) {
+                baseWaitTime = 3000; // 3 segundos base
+                maxWaitTime = 20000; // Máximo 20 segundos
+              } else {
+                baseWaitTime = 1000; // 1 segundo base
+                maxWaitTime = 5000; // Máximo 5 segundos
+              }
+              
+              const waitTime = Math.min(this.reconnectAttempts * baseWaitTime, maxWaitTime);
               this.logger.log(`🔄 Retrying WhatsApp connection (attempt ${this.reconnectAttempts}/${maxAttempts}) in ${waitTime / 1000}s...`);
 
               // For XML errors, suggest clearing session if multiple attempts fail
@@ -260,6 +323,9 @@ export class WhatsAppService implements OnModuleInit {
                 this.logger.warn('If XML errors persist, try clearing the session folder and reconnecting.');
               }
 
+              // Asegurar que isInitializing se restablezca antes de reintentar
+              this.isInitializing = false;
+              
               setTimeout(() => {
                 this.initializeWhatsApp();
               }, waitTime);
@@ -289,6 +355,7 @@ export class WhatsAppService implements OnModuleInit {
               this.logger.warn('⚠️  Waiting 60 seconds before retrying connection...');
 
               // Esperar 60 segundos y reiniciar el contador para intentar de nuevo
+              this.isInitializing = false; // Asegurar que se puede reinicializar
               setTimeout(() => {
                 this.reconnectAttempts = 0;
                 this.logger.log('🔄 Reiniciando intentos de reconexión...');
@@ -300,6 +367,7 @@ export class WhatsAppService implements OnModuleInit {
           this.logger.log('✅ WhatsApp connected successfully');
           this.reconnectAttempts = 0; // Reset counter on successful connection
           this.connectionState = 'connected';
+          this.isInitializing = false; // Marcar inicialización como completada
 
           // Iniciar mecanismo de keep-alive para mantener la sesión activa
           this.startKeepAlive();
@@ -383,6 +451,7 @@ export class WhatsAppService implements OnModuleInit {
     } catch (error: any) {
       this.logger.error('Error initializing WhatsApp:', error?.message || error);
       this.logger.error('Error stack:', error?.stack);
+      this.isInitializing = false; // Asegurar que se puede reintentar
       // Reintentar después de 5 segundos
       setTimeout(() => {
         this.logger.log('Retrying WhatsApp initialization...');
@@ -1591,10 +1660,16 @@ export class WhatsAppService implements OnModuleInit {
       this.reconnectAttempts = 0;
       this.currentQR = null;
       this.connectionState = 'connecting';
+      this.isInitializing = false; // Asegurar que se puede reinicializar
 
       // Disconnect existing socket if any
       if (this.socket) {
         try {
+          this.stopKeepAlive(); // Detener keep-alive primero
+          // Remover todos los event listeners
+          if (this.socket.ev) {
+            this.socket.ev.removeAllListeners();
+          }
           await this.socket.end(undefined);
         } catch (error) {
           this.logger.warn('Error ending existing socket:', error);
