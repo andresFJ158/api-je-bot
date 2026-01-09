@@ -22,8 +22,14 @@ export class BotController {
   }
 
   @Put()
-  updateConfig(@Body() updateDto: UpdateBotConfigDto) {
-    return this.botService.updateBotConfig(updateDto);
+  async updateConfig(@Body() updateDto: UpdateBotConfigDto) {
+    try {
+      this.logger.debug('PUT /bot-config');
+      return await this.botService.updateBotConfig(updateDto);
+    } catch (error) {
+      this.logger.error(`Error in updateConfig: ${error.message}`, error.stack);
+      throw error;
+    }
   }
 }
 

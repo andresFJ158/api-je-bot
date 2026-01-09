@@ -18,6 +18,7 @@ import { OrdersModule } from './orders/orders.module';
 import { PaymentMethodsModule } from './payment-methods/payment-methods.module';
 import { HealthModule } from './health/health.module';
 import { CombosModule } from './combos/combos.module';
+import { FAQModule } from './faq/faq.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { CombosModule } from './combos/combos.module';
     PaymentMethodsModule,
     HealthModule,
     CombosModule,
+    FAQModule,
   ],
 })
 export class AppModule { }

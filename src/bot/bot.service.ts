@@ -196,11 +196,13 @@ export class BotService {
     prepareOrderInsteadOfCreate?: boolean;
     extractOrderFromContext?: boolean;
   }) {
-    let config = await this.prisma.botConfig.findFirst();
+    try {
+      this.logger.debug('[updateBotConfig] Iniciando actualización de configuración');
+      let config = await this.prisma.botConfig.findFirst();
 
-    if (!config) {
-      config = await this.prisma.botConfig.create({
-        data: {
+      if (!config) {
+        // Create new config - only use fields that exist in DB
+        const createData: any = {
           systemPrompt: data.systemPrompt || 'Eres un Asistente Virtual (Chatbot) que actúa como punto de entrada del cliente. Tu función es: CLASIFICAR las consultas de los usuarios, COTIZAR productos y precios, y REGISTRAR información (pedidos, contactos, etc.). IMPORTANTE: NUNCA vendas ni confirmes pagos. Solo proporciona información, cotizaciones y registra datos. Las ventas y confirmaciones de pago deben ser manejadas por agentes humanos.',
           temperature: data.temperature ?? 0.7,
           maxTokens: data.maxTokens ?? 500,
@@ -210,19 +212,6 @@ export class BotService {
           orderInstructions: data.orderInstructions,
           locationInstructions: data.locationInstructions,
           locationKeywords: data.locationKeywords,
-          // New configurable message fields - using type assertion until Prisma Client is regenerated
-          ...(data.orderSuccessMessage && { orderSuccessMessage: data.orderSuccessMessage } as any),
-          ...(data.orderErrorMessage && { orderErrorMessage: data.orderErrorMessage } as any),
-          ...(data.orderNotFoundMessage && { orderNotFoundMessage: data.orderNotFoundMessage } as any),
-          ...(data.orderPrepareErrorMessage && { orderPrepareErrorMessage: data.orderPrepareErrorMessage } as any),
-          ...(data.paymentMethodsMessage && { paymentMethodsMessage: data.paymentMethodsMessage } as any),
-          ...(data.paymentMethodsNotFoundMessage && { paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage } as any),
-          ...(data.locationDefaultMessage && { locationDefaultMessage: data.locationDefaultMessage } as any),
-          ...(data.nearestBranchMessage && { nearestBranchMessage: data.nearestBranchMessage } as any),
-          ...(data.generalErrorMessage && { generalErrorMessage: data.generalErrorMessage } as any),
-          ...(data.branchNotFoundMessage && { branchNotFoundMessage: data.branchNotFoundMessage } as any),
-          ...(data.productsRequiredMessage && { productsRequiredMessage: data.productsRequiredMessage } as any),
-          ...(data.paymentConfirmationMessage && { paymentConfirmationMessage: data.paymentConfirmationMessage } as any),
           autoCreateOrderOnPaymentRequest: data.autoCreateOrderOnPaymentRequest ?? false,
           autoSendQRImages: data.autoSendQRImages ?? true,
           notifyOrderStatusChanges: data.notifyOrderStatusChanges ?? true,
@@ -230,105 +219,145 @@ export class BotService {
           showLocationInstructions: data.showLocationInstructions ?? true,
           prepareOrderInsteadOfCreate: data.prepareOrderInsteadOfCreate ?? true,
           extractOrderFromContext: data.extractOrderFromContext ?? true,
-        } as any,
-      });
-    } else {
-      // Separate existing fields from new message fields
-      const existingFields: any = {
-        systemPrompt: data.systemPrompt,
-        temperature: data.temperature,
-        maxTokens: data.maxTokens,
-        model: data.model,
-        contextMessages: data.contextMessages,
-        classificationCategories: data.classificationCategories,
-        orderInstructions: data.orderInstructions,
-        locationInstructions: data.locationInstructions,
-        locationKeywords: data.locationKeywords,
-        autoCreateOrderOnPaymentRequest: data.autoCreateOrderOnPaymentRequest,
-        autoSendQRImages: data.autoSendQRImages,
-        notifyOrderStatusChanges: data.notifyOrderStatusChanges,
-        findNearestBranchOnLocationShare: data.findNearestBranchOnLocationShare,
-        showLocationInstructions: data.showLocationInstructions,
-        prepareOrderInsteadOfCreate: data.prepareOrderInsteadOfCreate,
-        extractOrderFromContext: data.extractOrderFromContext,
-      };
+        };
 
-      // Remove undefined values
-      Object.keys(existingFields).forEach(key => {
-        if (existingFields[key] === undefined) {
-          delete existingFields[key];
+        // Try to add new message fields if they exist in DB
+        try {
+          config = await this.prisma.botConfig.create({
+            data: {
+              ...createData,
+              // New configurable message fields - using type assertion until Prisma Client is regenerated
+              ...(data.orderSuccessMessage && { orderSuccessMessage: data.orderSuccessMessage } as any),
+              ...(data.orderErrorMessage && { orderErrorMessage: data.orderErrorMessage } as any),
+              ...(data.orderNotFoundMessage && { orderNotFoundMessage: data.orderNotFoundMessage } as any),
+              ...(data.orderPrepareErrorMessage && { orderPrepareErrorMessage: data.orderPrepareErrorMessage } as any),
+              ...(data.paymentMethodsMessage && { paymentMethodsMessage: data.paymentMethodsMessage } as any),
+              ...(data.paymentMethodsNotFoundMessage && { paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage } as any),
+              ...(data.locationDefaultMessage && { locationDefaultMessage: data.locationDefaultMessage } as any),
+              ...(data.nearestBranchMessage && { nearestBranchMessage: data.nearestBranchMessage } as any),
+              ...(data.generalErrorMessage && { generalErrorMessage: data.generalErrorMessage } as any),
+              ...(data.branchNotFoundMessage && { branchNotFoundMessage: data.branchNotFoundMessage } as any),
+              ...(data.productsRequiredMessage && { productsRequiredMessage: data.productsRequiredMessage } as any),
+              ...(data.paymentConfirmationMessage && { paymentConfirmationMessage: data.paymentConfirmationMessage } as any),
+            } as any,
+          });
+        } catch (createError: any) {
+          // If error is due to missing columns, create without new fields
+          if (createError.code === '42703' || createError.message?.includes('column') || createError.message?.includes('does not exist')) {
+            this.logger.warn('New message columns may not exist in database yet. Creating config without new message fields...');
+            config = await this.prisma.botConfig.create({
+              data: createData,
+            });
+          } else {
+            throw createError;
+          }
         }
-      });
+      } else {
+        // Separate existing fields from new message fields
+        const existingFields: any = {
+          systemPrompt: data.systemPrompt,
+          temperature: data.temperature,
+          maxTokens: data.maxTokens,
+          model: data.model,
+          contextMessages: data.contextMessages,
+          classificationCategories: data.classificationCategories,
+          orderInstructions: data.orderInstructions,
+          locationInstructions: data.locationInstructions,
+          locationKeywords: data.locationKeywords,
+          autoCreateOrderOnPaymentRequest: data.autoCreateOrderOnPaymentRequest,
+          autoSendQRImages: data.autoSendQRImages,
+          notifyOrderStatusChanges: data.notifyOrderStatusChanges,
+          findNearestBranchOnLocationShare: data.findNearestBranchOnLocationShare,
+          showLocationInstructions: data.showLocationInstructions,
+          prepareOrderInsteadOfCreate: data.prepareOrderInsteadOfCreate,
+          extractOrderFromContext: data.extractOrderFromContext,
+        };
 
-      // New message fields (may not exist in DB yet)
-      const newMessageFields: any = {
-        orderSuccessMessage: data.orderSuccessMessage,
-        orderErrorMessage: data.orderErrorMessage,
-        orderNotFoundMessage: data.orderNotFoundMessage,
-        orderPrepareErrorMessage: data.orderPrepareErrorMessage,
-        paymentMethodsMessage: data.paymentMethodsMessage,
-        paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage,
-        locationDefaultMessage: data.locationDefaultMessage,
-        nearestBranchMessage: data.nearestBranchMessage,
-        generalErrorMessage: data.generalErrorMessage,
-        branchNotFoundMessage: data.branchNotFoundMessage,
-        productsRequiredMessage: data.productsRequiredMessage,
-        paymentConfirmationMessage: data.paymentConfirmationMessage,
-      };
-
-      // Remove undefined values
-      Object.keys(newMessageFields).forEach(key => {
-        if (newMessageFields[key] === undefined) {
-          delete newMessageFields[key];
-        }
-      });
-
-      try {
-        // Try to update with all fields first
-        config = await this.prisma.botConfig.update({
-          where: { id: config.id },
-          data: {
-            ...existingFields,
-            ...newMessageFields,
-          } as any,
+        // Remove undefined values
+        Object.keys(existingFields).forEach(key => {
+          if (existingFields[key] === undefined) {
+            delete existingFields[key];
+          }
         });
-      } catch (error: any) {
-        // If error is due to missing columns, update only existing fields
-        if (error.code === '42703' || error.message?.includes('column') || error.message?.includes('does not exist')) {
-          this.logger.warn('New message columns may not exist in database yet. Updating only existing fields...');
+
+        // New message fields (may not exist in DB yet)
+        const newMessageFields: any = {
+          orderSuccessMessage: data.orderSuccessMessage,
+          orderErrorMessage: data.orderErrorMessage,
+          orderNotFoundMessage: data.orderNotFoundMessage,
+          orderPrepareErrorMessage: data.orderPrepareErrorMessage,
+          paymentMethodsMessage: data.paymentMethodsMessage,
+          paymentMethodsNotFoundMessage: data.paymentMethodsNotFoundMessage,
+          locationDefaultMessage: data.locationDefaultMessage,
+          nearestBranchMessage: data.nearestBranchMessage,
+          generalErrorMessage: data.generalErrorMessage,
+          branchNotFoundMessage: data.branchNotFoundMessage,
+          productsRequiredMessage: data.productsRequiredMessage,
+          paymentConfirmationMessage: data.paymentConfirmationMessage,
+        };
+
+        // Remove undefined values
+        Object.keys(newMessageFields).forEach(key => {
+          if (newMessageFields[key] === undefined) {
+            delete newMessageFields[key];
+          }
+        });
+
+        try {
+          // Try to update with all fields first
           config = await this.prisma.botConfig.update({
             where: { id: config.id },
-            data: existingFields,
+            data: {
+              ...existingFields,
+              ...newMessageFields,
+            } as any,
           });
-          // Log that new fields were skipped
-          if (Object.keys(newMessageFields).length > 0) {
-            this.logger.warn(`Skipped updating new message fields (columns don't exist yet): ${Object.keys(newMessageFields).join(', ')}`);
-            this.logger.warn('Please run: npx prisma migrate dev --name add_bot_config_messages');
+        } catch (error: any) {
+          // If error is due to missing columns, update only existing fields
+          if (error.code === '42703' || error.message?.includes('column') || error.message?.includes('does not exist')) {
+            this.logger.warn('New message columns may not exist in database yet. Updating only existing fields...');
+            config = await this.prisma.botConfig.update({
+              where: { id: config.id },
+              data: existingFields,
+            });
+            // Log that new fields were skipped
+            if (Object.keys(newMessageFields).length > 0) {
+              this.logger.warn(`Skipped updating new message fields (columns don't exist yet): ${Object.keys(newMessageFields).join(', ')}`);
+              this.logger.warn('Please run: npx prisma migrate dev --name add_bot_config_messages');
+            }
+          } else {
+            throw error;
           }
-        } else {
-          throw error;
         }
       }
+
+      // Ensure all new message fields are present in response (set to null if they don't exist in DB)
+      const configWithDefaults = {
+        ...config,
+        orderSuccessMessage: (config as any).orderSuccessMessage || null,
+        orderErrorMessage: (config as any).orderErrorMessage || null,
+        orderNotFoundMessage: (config as any).orderNotFoundMessage || null,
+        orderPrepareErrorMessage: (config as any).orderPrepareErrorMessage || null,
+        paymentMethodsMessage: (config as any).paymentMethodsMessage || null,
+        paymentMethodsNotFoundMessage: (config as any).paymentMethodsNotFoundMessage || null,
+        locationDefaultMessage: (config as any).locationDefaultMessage || null,
+        nearestBranchMessage: (config as any).nearestBranchMessage || null,
+        generalErrorMessage: (config as any).generalErrorMessage || null,
+        branchNotFoundMessage: (config as any).branchNotFoundMessage || null,
+        productsRequiredMessage: (config as any).productsRequiredMessage || null,
+        paymentConfirmationMessage: (config as any).paymentConfirmationMessage || null,
+      };
+
+      this.logger.debug('[updateBotConfig] Configuración actualizada exitosamente');
+      return configWithDefaults;
+    } catch (error: any) {
+      this.logger.error(`[updateBotConfig] Error actualizando configuración: ${error.message}`);
+      this.logger.error(`[updateBotConfig] Error stack: ${error.stack}`);
+      if (error.code) {
+        this.logger.error(`[updateBotConfig] Error code: ${error.code}`);
+      }
+      throw error;
     }
-
-    // Ensure all new message fields are present in response (set to null if they don't exist in DB)
-    const configWithDefaults = {
-      ...config,
-      orderSuccessMessage: (config as any).orderSuccessMessage || null,
-      orderErrorMessage: (config as any).orderErrorMessage || null,
-      orderNotFoundMessage: (config as any).orderNotFoundMessage || null,
-      orderPrepareErrorMessage: (config as any).orderPrepareErrorMessage || null,
-      paymentMethodsMessage: (config as any).paymentMethodsMessage || null,
-      paymentMethodsNotFoundMessage: (config as any).paymentMethodsNotFoundMessage || null,
-      locationDefaultMessage: (config as any).locationDefaultMessage || null,
-      nearestBranchMessage: (config as any).nearestBranchMessage || null,
-      generalErrorMessage: (config as any).generalErrorMessage || null,
-      branchNotFoundMessage: (config as any).branchNotFoundMessage || null,
-      productsRequiredMessage: (config as any).productsRequiredMessage || null,
-      paymentConfirmationMessage: (config as any).paymentConfirmationMessage || null,
-    };
-
-    return configWithDefaults;
   }
 
   async generateResponse(conversationId: string, userMessage: string): Promise<string | null> {
@@ -356,6 +385,13 @@ export class BotService {
       if (conversation.mode !== 'BOT') {
         this.logger.debug(`[generateResponse] Conversación no está en modo BOT, modo actual: ${conversation.mode}`);
         return null;
+      }
+
+      // Check FAQs first - if a match is found, return the answer directly without using AI
+      const faqMatch = await this.findFAQMatch(userMessage);
+      if (faqMatch) {
+        this.logger.log(`[generateResponse] FAQ match found: "${faqMatch.question}" - Returning automatic answer`);
+        return faqMatch.answer;
       }
 
       this.logger.debug(`[generateResponse] Obteniendo configuración del bot...`);
@@ -1026,284 +1062,369 @@ export class BotService {
     }
   }
 
-  async classifyIntent(message: string): Promise<string> {
+  /**
+   * Busca una pregunta frecuente que coincida con el mensaje del usuario
+   * Retorna la respuesta automática si encuentra una coincidencia
+   */
+  private async findFAQMatch(userMessage: string): Promise<{ question: string; answer: string } | null> {
     try {
-      this.logger.debug(`[classifyIntent] Clasificando mensaje: ${message.substring(0, 50)}...`);
-      const config = await this.getBotConfig();
-      const categories = config.classificationCategories || ['ventas', 'soporte', 'facturacion', 'otros'];
-      this.logger.debug(`[classifyIntent] Categorías disponibles: ${categories.join(', ')}`);
+      // Normalizar el mensaje del usuario para comparación
+      const normalizedMessage = userMessage.toLowerCase().trim();
 
-      const modelToUse = config.model || 'deepseek-chat';
-      this.logger.debug(`[classifyIntent] Usando modelo: ${modelToUse}`);
-
-      // Optimized prompt using TOON format
-      let completion;
+      // Obtener todas las FAQs activas
+      // Note: Prisma converts model name 'FAQ' to 'fAQ' in the client
+      let faqs: any[] = [];
       try {
-        this.logger.debug(`[classifyIntent] Haciendo llamada a API para clasificar...`);
-        completion = await this.openai.chat.completions.create({
-          model: modelToUse,
-          messages: [
-            {
-              role: 'system',
-              content: `Classify message. Respond with one word from: ${categories.join('|')}`,
-            },
-            { role: 'user', content: message },
-          ],
-          temperature: 0.3,
-          max_tokens: 10, // Reduced from 20
+        faqs = await (this.prisma as any).fAQ.findMany({
+          where: { isActive: true },
+          orderBy: [{ order: 'asc' }, { createdAt: 'desc' }],
         });
-        this.logger.debug(`[classifyIntent] Respuesta de clasificación recibida`);
-      } catch (apiError: any) {
-        this.logger.error(`[classifyIntent] Error en llamada a API:`, apiError);
-        this.logger.error(`[classifyIntent] Error message: ${apiError?.message}`);
-        this.logger.error(`[classifyIntent] Error code: ${apiError?.code}`);
-        throw apiError;
+      } catch (prismaError: any) {
+        // If FAQ model doesn't exist yet (migration not run), return null
+        if (prismaError.code === 'P2001' || prismaError.message?.includes('does not exist') || prismaError.message?.includes('Unknown model')) {
+          this.logger.debug('[findFAQMatch] FAQ model not found in database yet. Run migration to enable FAQs.');
+          return null;
+        }
+        throw prismaError;
       }
 
-      const classification = completion.choices[0]?.message?.content?.trim().toLowerCase();
-      this.logger.debug(`[classifyIntent] Clasificación raw: ${classification}`);
-      const result = categories.find((cat) => classification?.includes(cat)) || categories[categories.length - 1] || 'otros';
-      this.logger.debug(`[classifyIntent] Categoría final: ${result}`);
-      return result;
-    } catch (error: any) {
-      this.logger.error(`[classifyIntent] ERROR al clasificar intención`);
-      this.logger.error(`[classifyIntent] Error type: ${error?.constructor?.name || typeof error}`);
-      this.logger.error(`[classifyIntent] Error message: ${error?.message || 'Sin mensaje'}`);
-      this.logger.error(`[classifyIntent] Error stack: ${error?.stack || 'Sin stack trace'}`);
-      console.error('Error classifying intent:', error);
-      return 'otros';
+      if (faqs.length === 0) {
+        return null;
+      }
+
+      // Buscar coincidencia exacta o por palabras clave
+      for (const faq of faqs) {
+        // Normalizar la pregunta
+        const normalizedQuestion = faq.question.toLowerCase().trim();
+
+        // 1. Coincidencia exacta (ignorando mayúsculas/minúsculas)
+        if (normalizedMessage === normalizedQuestion) {
+          this.logger.debug(`[findFAQMatch] Exact match found: "${faq.question}"`);
+          return { question: faq.question, answer: faq.answer };
+        }
+
+        // 2. Coincidencia por palabras clave si están definidas
+        if (faq.keywords && faq.keywords.length > 0) {
+          const messageWords = normalizedMessage.split(/\s+/);
+          const keywordMatches = faq.keywords.filter(keyword => {
+            const normalizedKeyword = keyword.toLowerCase().trim();
+            // Verificar si la palabra clave está en el mensaje
+            return messageWords.some(word => word.includes(normalizedKeyword) || normalizedKeyword.includes(word)) ||
+              normalizedMessage.includes(normalizedKeyword);
+          });
+
+          // Si al menos el 50% de las palabras clave coinciden, considerar match
+          if (keywordMatches.length >= Math.ceil(faq.keywords.length * 0.5)) {
+            this.logger.debug(`[findFAQMatch] Keyword match found: "${faq.question}" (${keywordMatches.length}/${faq.keywords.length} keywords)`);
+            return { question: faq.question, answer: faq.answer };
+          }
+        }
+
+        // 3. Coincidencia parcial - verificar si la pregunta está contenida en el mensaje o viceversa
+        if (normalizedMessage.includes(normalizedQuestion) || normalizedQuestion.includes(normalizedMessage)) {
+          // Solo considerar match si la pregunta o mensaje tienen al menos 5 caracteres para evitar falsos positivos
+          if (normalizedQuestion.length >= 5 || normalizedMessage.length >= 5) {
+            this.logger.debug(`[findFAQMatch] Partial match found: "${faq.question}"`);
+            return { question: faq.question, answer: faq.answer };
+          }
+        }
+
+        // 4. Coincidencia por palabras importantes (al menos 3 palabras en común)
+        const questionWords = normalizedQuestion.split(/\s+/).filter(w => w.length > 3); // Palabras de más de 3 caracteres
+        const commonWords = questionWords.filter(qw => normalizedMessage.includes(qw));
+
+        if (commonWords.length >= 3 && commonWords.length >= questionWords.length * 0.6) {
+          this.logger.debug(`[findFAQMatch] Word match found: "${faq.question}" (${commonWords.length} common words)`);
+          return { question: faq.question, answer: faq.answer };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.error(`[findFAQMatch] Error searching FAQs: ${error.message}`);
+      return null;
     }
   }
+}
 
-  private async handleCreateOrder(userId: string, args: any): Promise<{
-    success: boolean;
-    orderId?: string;
-    branchName?: string;
-    itemsSummary?: string;
-    total?: number;
-    error?: string;
-  }> {
+  async classifyIntent(message: string): Promise < string > {
+  try {
+    this.logger.debug(`[classifyIntent] Clasificando mensaje: ${message.substring(0, 50)}...`);
+    const config = await this.getBotConfig();
+    const categories = config.classificationCategories || ['ventas', 'soporte', 'facturacion', 'otros'];
+    this.logger.debug(`[classifyIntent] Categorías disponibles: ${categories.join(', ')}`);
+
+    const modelToUse = config.model || 'deepseek-chat';
+    this.logger.debug(`[classifyIntent] Usando modelo: ${modelToUse}`);
+
+    // Optimized prompt using TOON format
+    let completion;
     try {
-      this.logger.debug(`[handleCreateOrder] Iniciando creación de pedido para usuario: ${userId}`);
-      this.logger.debug(`[handleCreateOrder] Args recibidos: ${JSON.stringify(args)}`);
+      this.logger.debug(`[classifyIntent] Haciendo llamada a API para clasificar...`);
+      completion = await this.openai.chat.completions.create({
+        model: modelToUse,
+        messages: [
+          {
+            role: 'system',
+            content: `Classify message. Respond with one word from: ${categories.join('|')}`,
+          },
+          { role: 'user', content: message },
+        ],
+        temperature: 0.3,
+        max_tokens: 10, // Reduced from 20
+      });
+      this.logger.debug(`[classifyIntent] Respuesta de clasificación recibida`);
+    } catch(apiError: any) {
+      this.logger.error(`[classifyIntent] Error en llamada a API:`, apiError);
+      this.logger.error(`[classifyIntent] Error message: ${apiError?.message}`);
+      this.logger.error(`[classifyIntent] Error code: ${apiError?.code}`);
+      throw apiError;
+    }
 
-      // Find branch by name
-      const branches = await this.branchesService.findAll(true);
-      const branch = branches.find(
-        (b) => b.name.toLowerCase().includes(args.branchName.toLowerCase()) ||
-          args.branchName.toLowerCase().includes(b.name.toLowerCase())
-      );
+      const classification = completion.choices[0]?.message?.content?.trim().toLowerCase();
+    this.logger.debug(`[classifyIntent] Clasificación raw: ${classification}`);
+    const result = categories.find((cat) => classification?.includes(cat)) || categories[categories.length - 1] || 'otros';
+    this.logger.debug(`[classifyIntent] Categoría final: ${result}`);
+    return result;
+  } catch(error: any) {
+    this.logger.error(`[classifyIntent] ERROR al clasificar intención`);
+    this.logger.error(`[classifyIntent] Error type: ${error?.constructor?.name || typeof error}`);
+    this.logger.error(`[classifyIntent] Error message: ${error?.message || 'Sin mensaje'}`);
+    this.logger.error(`[classifyIntent] Error stack: ${error?.stack || 'Sin stack trace'}`);
+    console.error('Error classifying intent:', error);
+    return 'otros';
+  }
+}
 
-      if (!branch) {
-        this.logger.warn(`[handleCreateOrder] Sucursal no encontrada: ${args.branchName}`);
-        return {
-          success: false,
-          error: `No se encontró la sucursal "${args.branchName}". Por favor, verifica el nombre.`,
-        };
-      }
+  private async handleCreateOrder(userId: string, args: any): Promise < {
+  success: boolean;
+  orderId?: string;
+  branchName?: string;
+  itemsSummary?: string;
+  total?: number;
+  error?: string;
+} > {
+  try {
+    this.logger.debug(`[handleCreateOrder] Iniciando creación de pedido para usuario: ${userId}`);
+    this.logger.debug(`[handleCreateOrder] Args recibidos: ${JSON.stringify(args)}`);
+
+    // Find branch by name
+    const branches = await this.branchesService.findAll(true);
+    const branch = branches.find(
+      (b) => b.name.toLowerCase().includes(args.branchName.toLowerCase()) ||
+        args.branchName.toLowerCase().includes(b.name.toLowerCase())
+    );
+
+    if(!branch) {
+      this.logger.warn(`[handleCreateOrder] Sucursal no encontrada: ${args.branchName}`);
+      return {
+        success: false,
+        error: `No se encontró la sucursal "${args.branchName}". Por favor, verifica el nombre.`,
+      };
+    }
 
       this.logger.debug(`[handleCreateOrder] Sucursal encontrada: ${branch.name} (${branch.id})`);
 
-      // Find products by name
-      const allProducts = await this.prisma.product.findMany();
-      this.logger.debug(`[handleCreateOrder] Productos disponibles: ${allProducts.length}`);
+    // Find products by name
+    const allProducts = await this.prisma.product.findMany();
+    this.logger.debug(`[handleCreateOrder] Productos disponibles: ${allProducts.length}`);
 
-      const orderItems = [];
-      for (const item of args.items || []) {
-        const product = allProducts.find(
-          (p) => p.name.toLowerCase() === item.productName.toLowerCase() ||
-            p.name.toLowerCase().includes(item.productName.toLowerCase()) ||
-            item.productName.toLowerCase().includes(p.name.toLowerCase())
-        );
+    const orderItems = [];
+    for(const item of args.items || []) {
+  const product = allProducts.find(
+    (p) => p.name.toLowerCase() === item.productName.toLowerCase() ||
+      p.name.toLowerCase().includes(item.productName.toLowerCase()) ||
+      item.productName.toLowerCase().includes(p.name.toLowerCase())
+  );
 
-        if (!product) {
-          this.logger.warn(`[handleCreateOrder] Producto no encontrado: ${item.productName}`);
-          return {
-            success: false,
-            error: `No se encontró el producto "${item.productName}". Por favor, verifica el nombre.`,
-          };
-        }
+  if (!product) {
+    this.logger.warn(`[handleCreateOrder] Producto no encontrado: ${item.productName}`);
+    return {
+      success: false,
+      error: `No se encontró el producto "${item.productName}". Por favor, verifica el nombre.`,
+    };
+  }
 
-        this.logger.debug(`[handleCreateOrder] Producto encontrado: ${product.name} (${product.id}), cantidad: ${item.quantity}, precio: ${product.price}`);
+  this.logger.debug(`[handleCreateOrder] Producto encontrado: ${product.name} (${product.id}), cantidad: ${item.quantity}, precio: ${product.price}`);
 
-        // Stock validation will be done by OrdersService
+  // Stock validation will be done by OrdersService
 
-        orderItems.push({
-          productId: product.id,
-          quantity: item.quantity,
-          unitPrice: product.price,
-        });
-      }
+  orderItems.push({
+    productId: product.id,
+    quantity: item.quantity,
+    unitPrice: product.price,
+  });
+}
 
-      if (orderItems.length === 0) {
-        this.logger.warn(`[handleCreateOrder] No se especificaron productos`);
-        return {
-          success: false,
-          error: 'No se especificaron productos para el pedido.',
-        };
-      }
+if (orderItems.length === 0) {
+  this.logger.warn(`[handleCreateOrder] No se especificaron productos`);
+  return {
+    success: false,
+    error: 'No se especificaron productos para el pedido.',
+  };
+}
 
-      this.logger.debug(`[handleCreateOrder] Creando pedido con ${orderItems.length} items en sucursal ${branch.id}`);
+this.logger.debug(`[handleCreateOrder] Creando pedido con ${orderItems.length} items en sucursal ${branch.id}`);
 
-      // Create order using OrdersService (same service used by POS)
-      const order = await this.ordersService.create(
-        {
-          branchId: branch.id,
-          userId: userId,
-          items: orderItems,
-          notes: args.notes || undefined,
-        },
-        undefined, // No agentId for bot orders - this indicates it was created by the bot
-      );
+// Create order using OrdersService (same service used by POS)
+const order = await this.ordersService.create(
+  {
+    branchId: branch.id,
+    userId: userId,
+    items: orderItems,
+    notes: args.notes || undefined,
+  },
+  undefined, // No agentId for bot orders - this indicates it was created by the bot
+);
 
-      this.logger.log(`[handleCreateOrder] ✅ Pedido creado exitosamente en el sistema POS: ${order.id}`);
-      this.logger.debug(`[handleCreateOrder] Pedido detalles - Total: ${order.total}, Items: ${order.items.length}, Estado: ${order.status}`);
+this.logger.log(`[handleCreateOrder] ✅ Pedido creado exitosamente en el sistema POS: ${order.id}`);
+this.logger.debug(`[handleCreateOrder] Pedido detalles - Total: ${order.total}, Items: ${order.items.length}, Estado: ${order.status}`);
 
-      const itemsSummary = orderItems
-        .map((item, idx) => {
-          const product = allProducts.find((p) => p.id === item.productId);
-          return `${idx + 1}. ${product?.name} x${item.quantity}`;
-        })
-        .join('\n');
+const itemsSummary = orderItems
+  .map((item, idx) => {
+    const product = allProducts.find((p) => p.id === item.productId);
+    return `${idx + 1}. ${product?.name} x${item.quantity}`;
+  })
+  .join('\n');
 
-      return {
-        success: true,
-        orderId: order.id,
-        branchName: branch.name,
-        itemsSummary,
-        total: order.total,
-      };
+return {
+  success: true,
+  orderId: order.id,
+  branchName: branch.name,
+  itemsSummary,
+  total: order.total,
+};
     } catch (error: any) {
-      this.logger.error(`[handleCreateOrder] ❌ Error al crear pedido:`, error);
-      this.logger.error(`[handleCreateOrder] Error message: ${error?.message}`);
-      this.logger.error(`[handleCreateOrder] Error stack: ${error?.stack}`);
-      return {
-        success: false,
-        error: error.message || 'Error desconocido al crear el pedido',
-      };
-    }
+  this.logger.error(`[handleCreateOrder] ❌ Error al crear pedido:`, error);
+  this.logger.error(`[handleCreateOrder] Error message: ${error?.message}`);
+  this.logger.error(`[handleCreateOrder] Error stack: ${error?.stack}`);
+  return {
+    success: false,
+    error: error.message || 'Error desconocido al crear el pedido',
+  };
+}
   }
 
   /**
    * Extract order information from conversation context messages
    * Looks for the most recent order summary that has both products and branch
    */
-  private async extractOrderFromContext(messages: any[]): Promise<any | null> {
-    try {
-      this.logger.debug(`[extractOrderFromContext] Buscando información de pedido en ${messages.length} mensajes`);
+  private async extractOrderFromContext(messages: any[]): Promise < any | null > {
+  try {
+    this.logger.debug(`[extractOrderFromContext] Buscando información de pedido en ${messages.length} mensajes`);
 
-      // Look for the most recent prepare_order function call result in assistant messages
-      // We want the message that has BOTH products AND branch (the final summary)
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
+    // Look for the most recent prepare_order function call result in assistant messages
+    // We want the message that has BOTH products AND branch (the final summary)
+    for(let i = messages.length - 1; i >= 0; i--) {
+  const msg = messages[i];
 
-        // Check if this is an assistant message that contains order summary
-        if (msg.sender === 'assistant' && msg.content) {
-          this.logger.debug(`[extractOrderFromContext] Revisando mensaje del asistente: ${msg.content.substring(0, 100)}...`);
+  // Check if this is an assistant message that contains order summary
+  if (msg.sender === 'assistant' && msg.content) {
+    this.logger.debug(`[extractOrderFromContext] Revisando mensaje del asistente: ${msg.content.substring(0, 100)}...`);
 
-          // Look for order summary pattern: "Resumen de tu pedido" - this is the final summary with both products and branch
-          if (msg.content.includes('Resumen de tu pedido')) {
-            this.logger.debug(`[extractOrderFromContext] Mensaje contiene resumen completo de pedido`);
+    // Look for order summary pattern: "Resumen de tu pedido" - this is the final summary with both products and branch
+    if (msg.content.includes('Resumen de tu pedido')) {
+      this.logger.debug(`[extractOrderFromContext] Mensaje contiene resumen completo de pedido`);
 
-            // Try to extract branch name
-            const branchMatch = msg.content.match(/Sucursal:\s*([^\n]+)/i);
-            if (!branchMatch) {
-              this.logger.debug(`[extractOrderFromContext] No se encontró nombre de sucursal en resumen`);
-              continue;
+      // Try to extract branch name
+      const branchMatch = msg.content.match(/Sucursal:\s*([^\n]+)/i);
+      if (!branchMatch) {
+        this.logger.debug(`[extractOrderFromContext] No se encontró nombre de sucursal en resumen`);
+        continue;
+      }
+
+      const branchName = branchMatch[1].trim();
+      this.logger.debug(`[extractOrderFromContext] Sucursal encontrada: ${branchName}`);
+
+      // Try multiple patterns to extract items
+      // Pattern 1: "1. Producto x2 (Bs.10.00)" or "Producto x2 (Bs.10.00)"
+      let itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^(]+?)\s*x(\d+)\s*\(/gm);
+
+      // Pattern 2: "1. Producto x2" or "Producto x2" (without price)
+      if (!itemsMatches || itemsMatches.length === 0) {
+        itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^x\n]+?)\s*x(\d+)/gm);
+      }
+
+      // Pattern 3: Just look for "x" followed by number (more flexible)
+      if (!itemsMatches || itemsMatches.length === 0) {
+        itemsMatches = msg.content.match(/([^\n\d]+?)\s*x(\d+)/g);
+      }
+
+      if (!itemsMatches || itemsMatches.length === 0) {
+        this.logger.debug(`[extractOrderFromContext] No se encontraron items en el mensaje`);
+        continue;
+      }
+
+      this.logger.debug(`[extractOrderFromContext] Encontrados ${itemsMatches.length} items potenciales`);
+
+      const items = [];
+      const allProducts = await this.prisma.product.findMany();
+
+      for (const itemMatch of itemsMatches) {
+        // Try to extract product name and quantity
+        let productName = '';
+        let quantity = 0;
+
+        // Pattern 1: "1. Producto x2 (Bs.10.00)"
+        const pattern1 = itemMatch.match(/\d+\.\s*([^(]+?)\s*x(\d+)\s*\(/);
+        if (pattern1) {
+          productName = pattern1[1].trim();
+          quantity = parseInt(pattern1[2].trim());
+        } else {
+          // Pattern 2: "Producto x2"
+          const pattern2 = itemMatch.match(/([^x\n]+?)\s*x(\d+)/);
+          if (pattern2) {
+            productName = pattern2[1].trim().replace(/^\d+\.\s*/, ''); // Remove leading number and dot
+            quantity = parseInt(pattern2[2].trim());
+          }
+        }
+
+        if (productName && quantity > 0) {
+          this.logger.debug(`[extractOrderFromContext] Intentando encontrar producto: "${productName}" x${quantity}`);
+
+          // Find matching product
+          const product = allProducts.find(
+            (p) => {
+              const pName = p.name.toLowerCase().trim();
+              const searchName = productName.toLowerCase().trim();
+              return pName === searchName ||
+                pName.includes(searchName) ||
+                searchName.includes(pName);
             }
+          );
 
-            const branchName = branchMatch[1].trim();
-            this.logger.debug(`[extractOrderFromContext] Sucursal encontrada: ${branchName}`);
-
-            // Try multiple patterns to extract items
-            // Pattern 1: "1. Producto x2 (Bs.10.00)" or "Producto x2 (Bs.10.00)"
-            let itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^(]+?)\s*x(\d+)\s*\(/gm);
-
-            // Pattern 2: "1. Producto x2" or "Producto x2" (without price)
-            if (!itemsMatches || itemsMatches.length === 0) {
-              itemsMatches = msg.content.match(/(?:^\d+\.\s*)?([^x\n]+?)\s*x(\d+)/gm);
-            }
-
-            // Pattern 3: Just look for "x" followed by number (more flexible)
-            if (!itemsMatches || itemsMatches.length === 0) {
-              itemsMatches = msg.content.match(/([^\n\d]+?)\s*x(\d+)/g);
-            }
-
-            if (!itemsMatches || itemsMatches.length === 0) {
-              this.logger.debug(`[extractOrderFromContext] No se encontraron items en el mensaje`);
-              continue;
-            }
-
-            this.logger.debug(`[extractOrderFromContext] Encontrados ${itemsMatches.length} items potenciales`);
-
-            const items = [];
-            const allProducts = await this.prisma.product.findMany();
-
-            for (const itemMatch of itemsMatches) {
-              // Try to extract product name and quantity
-              let productName = '';
-              let quantity = 0;
-
-              // Pattern 1: "1. Producto x2 (Bs.10.00)"
-              const pattern1 = itemMatch.match(/\d+\.\s*([^(]+?)\s*x(\d+)\s*\(/);
-              if (pattern1) {
-                productName = pattern1[1].trim();
-                quantity = parseInt(pattern1[2].trim());
-              } else {
-                // Pattern 2: "Producto x2"
-                const pattern2 = itemMatch.match(/([^x\n]+?)\s*x(\d+)/);
-                if (pattern2) {
-                  productName = pattern2[1].trim().replace(/^\d+\.\s*/, ''); // Remove leading number and dot
-                  quantity = parseInt(pattern2[2].trim());
-                }
-              }
-
-              if (productName && quantity > 0) {
-                this.logger.debug(`[extractOrderFromContext] Intentando encontrar producto: "${productName}" x${quantity}`);
-
-                // Find matching product
-                const product = allProducts.find(
-                  (p) => {
-                    const pName = p.name.toLowerCase().trim();
-                    const searchName = productName.toLowerCase().trim();
-                    return pName === searchName ||
-                      pName.includes(searchName) ||
-                      searchName.includes(pName);
-                  }
-                );
-
-                if (product) {
-                  this.logger.debug(`[extractOrderFromContext] Producto encontrado: ${product.name}`);
-                  items.push({
-                    productName: product.name,
-                    quantity: quantity,
-                  });
-                } else {
-                  this.logger.debug(`[extractOrderFromContext] Producto no encontrado: "${productName}"`);
-                }
-              }
-            }
-
-            if (branchName && items.length > 0) {
-              this.logger.debug(`[extractOrderFromContext] ✅ Orden extraída exitosamente: ${branchName}, ${items.length} items`);
-              return {
-                branchName: branchName,
-                items: items,
-              };
-            } else {
-              this.logger.debug(`[extractOrderFromContext] ⚠️ Orden incompleta: branchName=${!!branchName}, items=${items.length}`);
-            }
+          if (product) {
+            this.logger.debug(`[extractOrderFromContext] Producto encontrado: ${product.name}`);
+            items.push({
+              productName: product.name,
+              quantity: quantity,
+            });
+          } else {
+            this.logger.debug(`[extractOrderFromContext] Producto no encontrado: "${productName}"`);
           }
         }
       }
 
-      this.logger.debug(`[extractOrderFromContext] ❌ No se encontró información de pedido en el contexto`);
-      return null;
-    } catch (error) {
-      this.logger.error(`[extractOrderFromContext] Error extracting order: ${error.message}`);
-      this.logger.error(`[extractOrderFromContext] Error stack: ${error.stack}`);
-      return null;
+      if (branchName && items.length > 0) {
+        this.logger.debug(`[extractOrderFromContext] ✅ Orden extraída exitosamente: ${branchName}, ${items.length} items`);
+        return {
+          branchName: branchName,
+          items: items,
+        };
+      } else {
+        this.logger.debug(`[extractOrderFromContext] ⚠️ Orden incompleta: branchName=${!!branchName}, items=${items.length}`);
+      }
     }
+  }
+}
+
+this.logger.debug(`[extractOrderFromContext] ❌ No se encontró información de pedido en el contexto`);
+return null;
+    } catch (error) {
+  this.logger.error(`[extractOrderFromContext] Error extracting order: ${error.message}`);
+  this.logger.error(`[extractOrderFromContext] Error stack: ${error.stack}`);
+  return null;
+}
   }
 }
 
